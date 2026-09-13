@@ -22,6 +22,14 @@ import Foundation
 nonisolated enum AssetPasteboardEntry: Equatable {
     case file(AssetExportItem)
     case text(String)
+
+    /// The words this entry contributes to a copy's plain-text flavour (464): a
+    /// `.text` entry's string, and NOTHING for a `.file` — a picture's bytes are
+    /// not words, and its file path is not what the user copied a picture for.
+    var text: String? {
+        if case .text(let string) = self { return string }
+        return nil
+    }
 }
 
 /// A selection resolved to ordered pasteboard entries plus the count of selected
@@ -62,6 +70,40 @@ extension AssetExport {
         return textFallback(for: asset)
     }
 
+    /// The ⌘C rule (466): **a kind's own words beat bytes it merely acquired.**
+    ///
+    /// ``pasteboardEntry(asset:source:blobURL:)`` asks one question of every kind —
+    /// are there bytes? — and a link's og:image / a tweet's card image are bytes. So
+    /// copying a link card yielded a JPEG: a picture the user never chose, never saw
+    /// as a file, and could not name. 052 · B1 made that deliberate, reasoning from
+    /// how the tile RENDERS ("they render as image cards, so ⌘C must yield the
+    /// image"). A user reported the consequence — *"copy a link from a board pastes
+    /// an image instead"* — and the reasoning is what was wrong: how a tile looks is
+    /// not what the asset IS.
+    ///
+    /// A link asset is a page. Its identity is the URL, and the preview is
+    /// decoration the app fetched. An image asset is the opposite: the picture IS
+    /// the thing that was saved. So:
+    ///
+    ///  - `.link` / `.tweet` → the URL / permalink, **whether or not** a preview was
+    ///    captured. Every app in the loop agrees: a browser copies a URL, and Notes,
+    ///    Slack and Messages build their own card from one.
+    ///  - `.color` → its hex, as before (it never had bytes to prefer).
+    ///  - `.image` / `.video` → the file, exactly as before.
+    ///
+    /// **Copy only.** The originals folder export and the share sheet keep
+    /// ``pasteboardEntry(asset:source:blobURL:)``: exporting the ORIGINALS of a
+    /// collection means the bytes on disk, og:images included. And drag-out is a
+    /// different path entirely (file promises), so dragging a link card into Figma
+    /// still yields its picture — which is the one gesture that plausibly means
+    /// "I want that preview".
+    static func copyEntry(
+        asset: Asset, source: Source?, blobURL: URL?
+    ) -> AssetPasteboardEntry? {
+        textFallback(for: asset)
+            ?? pasteboardEntry(asset: asset, source: source, blobURL: blobURL)
+    }
+
     /// The words that stand in for an asset with no exportable bytes:
     /// - `.color` → the canonical `#rrggbb` hex.
     /// - `.link` → the saved URL.
@@ -93,19 +135,58 @@ extension AssetExport {
         }
     }
 
+    /// The WORDS of an ordered asset selection (465) — Edit ▸ Copy as Text, where
+    /// `⌘C`'s rich flavours are deliberately absent.
+    ///
+    /// The same per-asset rule ``copyEntry(asset:source:blobURL:)`` uses, so what a
+    /// text copy says about an asset never differs from what the fallback string of
+    /// a rich copy said: media contribute nothing, a colour its hex, a link its URL,
+    /// a tweet its permalink — a preview image no longer silences the last two (466).
+    static func copiedText(
+        assets: [(asset: Asset, source: Source?)], blobURL: (Asset) -> URL?
+    ) -> String? {
+        CopyText.joined(assets.map { pair in
+            copyEntry(
+                asset: pair.asset, source: pair.source,
+                blobURL: blobURL(pair.asset))?.text
+        })
+    }
+
+    /// Whether `asset` contributes words — for menu validation (465), and EXACT
+    /// since 466.
+    ///
+    /// It reads ``textFallback(for:)``, which is precisely the first half of
+    /// ``copyEntry(asset:source:blobURL:)``: a kind either has words or it does not,
+    /// and no blob can take them away any more. So the menu's enabled state and the
+    /// copy it performs cannot disagree — where 465 had to accept one disagreeing
+    /// row (a claimed blob whose file was gone) for a cheap answer, there is now
+    /// nothing to trade. No `blobHash` test, and no `FileManager` probe: this is
+    /// evaluated on every pass of the menu's body, and ⌘A over a large collection
+    /// would otherwise have meant a `stat` per selected asset per keystroke.
+    static func mayHaveText(_ asset: Asset) -> Bool {
+        textFallback(for: asset) != nil
+    }
+
     /// Map an ordered selection to its pasteboard entries, preserving order and
     /// counting the skips (7A). The single selection→entries assembly shared by
     /// grid, canvas, and detail (4A) — each surface only supplies its ordered
     /// `(asset, source)` pairs and a blob-URL resolver.
+    ///
+    /// `entry` is the per-asset RULE, and the one thing a caller may vary (466): a
+    /// ⌘C passes ``copyEntry(asset:source:blobURL:)``, where a link is its URL; the
+    /// originals export and the share sheet take the default, where a link is the
+    /// bytes it captured. Passed rather than branched on a flag so each call site
+    /// names the rule it means.
     static func exportSelection(
-        assets: [(asset: Asset, source: Source?)], blobURL: (Asset) -> URL?
+        assets: [(asset: Asset, source: Source?)], blobURL: (Asset) -> URL?,
+        entry: @MainActor (Asset, Source?, URL?) -> AssetPasteboardEntry?
+            = AssetExport.pasteboardEntry(asset:source:blobURL:)
     ) -> ExportSelection {
         var entries: [AssetPasteboardEntry] = []
         entries.reserveCapacity(assets.count)
         var skipped = 0
         for pair in assets {
-            if let entry = pasteboardEntry(
-                asset: pair.asset, source: pair.source, blobURL: blobURL(pair.asset)) {
+            if let entry = entry(pair.asset, pair.source, blobURL(pair.asset)) {
                 entries.append(entry)
             } else {
                 skipped += 1
@@ -127,6 +208,67 @@ extension AssetExport {
     }
 }
 
+/// The plain-text flavour of a copy (464) — what a ⌘C means to an app that only
+/// takes words: a message box, a note, a text field.
+///
+/// Two rules make it, both MEASURED against a real `NSPasteboard` rather than
+/// assumed:
+///
+/// 1. **Media are cut out, never described.** They already are, for free: an
+///    `NSURL` written to a pasteboard declares `public.file-url` and NOTHING else,
+///    so a file item contributes no string at all and a text field pasting a mixed
+///    copy never lands `/…/blobs/ab12.png`. Only pieces that ARE words go on — a
+///    board text box's string, a colour's hex, a link's URL.
+///
+///    **Being on the pasteboard is not the same as being reached** (465). A
+///    receiver picks by calling `availableType(from:)`, which answers in the order
+///    the RECEIVER asks — and every app that can take a file asks for a file first.
+///    So in Notes, Messages, Mail and every rich editor, a copy holding both a
+///    picture and a text box pastes the picture and never asks for these words.
+///    That is what Edit ▸ Copy as Text (⌥⌘C) exists for: the same words, with no
+///    file rep beside them to outrank them. See ``CopyText/write(only:to:)``.
+/// 2. **One joined string on ONE pasteboard item.** `string(forType:)` returns the
+///    CONCATENATION of every item's string, joined by a single `\n` — so N string
+///    items do reach the receiver, but separated by a newline this code never chose
+///    and in an order the item list happens to hold. Joining here instead means the
+///    copy says one thing, with our separator, in the selection's own order.
+enum CopyText {
+    /// A blank line between pieces: two text boxes are two paragraphs, and a piece
+    /// may itself span lines, so a single newline would run them together — which
+    /// is precisely what the pasteboard's own concatenation used to do.
+    static let separator = "\n\n"
+
+    /// Join `pieces` IN THE ORDER GIVEN — the caller's order is the selection's
+    /// own — trimming each and dropping the ones carrying nothing.
+    ///
+    /// `nil` rather than `""` when nothing survives, the "nil, not empty" rule the
+    /// two payloads already follow (065 §2.4): a copy with no words puts no string
+    /// item on the board at all, rather than an empty one for a receiver to paste
+    /// as a blank line.
+    static func joined(_ pieces: [String?]) -> String? {
+        let kept = pieces
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return kept.isEmpty ? nil : kept.joined(separator: separator)
+    }
+
+    /// Put `text` on `pasteboard` and NOTHING else (465) — Edit ▸ Copy as Text.
+    ///
+    /// The whole point is the absence: a ⌘C that also writes a file URL is a copy
+    /// every file-capable app reads as a file, because `availableType(from:)` answers
+    /// in the order the RECEIVER asks and every rich editor asks for a file first.
+    /// One string item is the only way to hand such an app the words.
+    ///
+    /// No app-private types either: a text copy pasted back onto a board makes a text
+    /// box out of the words, rather than silently rebuilding a layout the user asked
+    /// to have as text.
+    @discardableResult
+    static func write(only text: String, to pasteboard: NSPasteboard) -> Bool {
+        pasteboard.clearContents()
+        return pasteboard.setString(text, forType: .string)
+    }
+}
+
 /// Writes a resolved ``ExportSelection`` to an `NSPasteboard` per the 8A contract.
 /// Stateless — the general pasteboard is passed in so a scratch board can be used
 /// under test (11A).
@@ -136,29 +278,44 @@ enum AssetPasteboardWriter {
     /// - a `.file` entry writes its blob's **file URL** (Finder + drag-target apps),
     ///   and — only when a SINGLE image/video is copied — also the decoded `NSImage`
     ///   so editors get pixels; multi-select stays URL-only to avoid N eager decodes.
-    /// - a `.text` entry writes its string.
+    /// - every `.text` entry is joined into ONE trailing string item (464), rather
+    ///   than one item each: `string(forType:)` concatenates the items it finds with
+    ///   a `\n` of its own choosing, so N items let the PASTEBOARD decide how a copy
+    ///   of three colours reads. Last, so the file URL stays what an external
+    ///   receiver meets first.
     ///
-    /// Returns the number of entries written (0 for an empty selection, which still
-    /// clears the board). A single image whose `NSImage` fails to decode still
-    /// writes the file URL — the copy is never wholly lost to a decode failure.
+    /// `text` OVERRIDES those joined words for a caller holding pieces this
+    /// selection cannot see — a board, whose text boxes are not assets at all (464).
+    /// It is the whole selection's words or nothing: passing a `text` that omits an
+    /// asset's own words drops them, which is what a board wants when it has already
+    /// interleaved them into its z-order.
+    ///
+    /// Returns the number of ENTRIES written — the byte-side count the copy report
+    /// is about, which is 0 for a words-only copy. A selection with neither entries
+    /// nor words still clears the board. A single image whose `NSImage` fails to
+    /// decode still writes the file URL — the copy is never wholly lost to a decode
+    /// failure.
     @discardableResult
-    static func write(_ selection: ExportSelection, to pasteboard: NSPasteboard) -> Int {
+    static func write(
+        _ selection: ExportSelection, to pasteboard: NSPasteboard, text: String? = nil
+    ) -> Int {
         pasteboard.clearContents()
-        guard !selection.entries.isEmpty else { return 0 }
+        let words = text ?? CopyText.joined(selection.entries.map(\.text))
+        // Words with no entries is a real copy (a board's text boxes), not an empty
+        // one — only NEITHER is nothing to write.
+        guard !selection.entries.isEmpty || words != nil else { return 0 }
 
         let includeImageData = selection.entries.count == 1
         var objects: [NSPasteboardWriting] = []
         for entry in selection.entries {
-            switch entry {
-            case .file(let item):
-                objects.append(item.blobURL as NSURL)
-                if includeImageData, let image = NSImage(contentsOf: item.blobURL) {
-                    objects.append(image)
-                }
-            case .text(let string):
-                objects.append(string as NSString)
+            // `.text` entries are not written here — they are in `words` above.
+            guard case .file(let item) = entry else { continue }
+            objects.append(item.blobURL as NSURL)
+            if includeImageData, let image = NSImage(contentsOf: item.blobURL) {
+                objects.append(image)
             }
         }
+        if let words { objects.append(words as NSString) }
         pasteboard.writeObjects(objects)
         return selection.entries.count
     }

@@ -12,6 +12,7 @@
 //
 
 import AppKit
+import AtelierArchive
 import AtelierCore
 import AtelierIngestion
 import SwiftUI
@@ -202,6 +203,28 @@ struct CollectionView: View {
         // this body already observes for handing the keyboard over.
         .focusedSceneValue(
             \.deleteVerbs, nav.presentedItemID == nil ? gridDeleteVerbs : nil)
+        // Edit ▸ Copy as Text (⌥⌘C, 465) — the words of the grid's selection: the
+        // colours' hex, the links' and tweets' URLs, and nothing for anything with
+        // a picture. Gated on the route exactly as the delete verbs are, so the
+        // page's own value answers while the page is up.
+        .focusedSceneValue(
+            \.copyAsText, nav.presentedItemID == nil ? gridCopyAsText : nil)
+    }
+
+    /// The grid's ⌥⌘C (465), over the SAME widened selection ⌘C copies
+    /// (``IngestionModel/itemIDsForAction(_:)``) and in the same feed order, so the
+    /// two commands never disagree about what "the selection" is.
+    private var gridCopyAsText: CopyAsTextVerb {
+        let ids = model.itemIDsForAction(model.selection.ids)
+        let selected = model.items.filter { ids.contains($0.item.id) }
+        return CopyAsTextVerb(
+            canCopy: selected.contains { AssetExport.mayHaveText($0.asset) },
+            copy: {
+                guard let words = AssetExport.copiedText(
+                    assets: selected.map { (asset: $0.asset, source: Optional($0.source)) },
+                    blobURL: { model.blobURL(forAsset: $0) }) else { return }
+                CopyText.write(only: words, to: .general)
+            })
     }
 
     /// The grid's ⌫ / ⌘⌫, as the Edit menu performs them — the selection, or the lead
@@ -286,9 +309,19 @@ struct CollectionView: View {
         grid
             // ⌘V pastes into this collection — a hidden shortcut-only button, kept in
             // the SwiftUI key path (the header's create button is the other entry).
+            //
+            // The binding is WITHDRAWN while the detail page is up, for 354's reason
+            // and on 354's rule: a key equivalent is dispatched before the event
+            // reaches the first responder, so a live binding here answers ⌘V pressed
+            // ON the page — where it means "paste into the Name / Note field", or
+            // nothing at all — by importing the board into the collection BEHIND the
+            // page. Withdrawn, the keystroke falls through to Edit ▸ Paste and the
+            // responder chain, which is the page's field editor when one is up and
+            // nobody when one is not.
             .background {
                 Button("Paste", action: paste)
-                    .keyboardShortcut("v", modifiers: .command)
+                    .keyboardShortcut(
+                        Self.pasteShortcut(detailPresented: nav.presentedItemID != nil))
                     .disabled(!model.isReady)
                     .hidden()
             }
@@ -1097,6 +1130,48 @@ struct CollectionView: View {
         case alreadyMembers
         /// Anything else — including no payload at all: the generic importer.
         case importExternal
+        /// A board copy carrying no assets — text boxes and frames only. Nothing in
+        /// it can become a reference, and the WORDS a board ⌘C now leaves for other
+        /// apps (464) must not be re-read here as importable content: a text box
+        /// reading `https://…` would otherwise import as a fresh link, from a ⌘V that
+        /// did nothing at all before. Silent — ⌘V of a text box into a grid is a
+        /// mistake, not an error.
+        case nothing
+    }
+
+    /// Whether the hidden ⌘V button carries its binding, given whether the detail page
+    /// is up.
+    ///
+    /// `nil` WITHDRAWS the key equivalent and leaves the button mounted — the shape
+    /// `SpaceView`'s undo / duplicate / z-order bindings already use while a text box is
+    /// being edited. Unmounting the button instead would be the trap that file documents
+    /// from the other side: a `keyboardShortcut` on a view that isn't rendered never
+    /// fires, so the binding would be gone on paths that never mount the background.
+    static func pasteShortcut(detailPresented: Bool) -> KeyboardShortcut? {
+        detailPresented ? nil : KeyboardShortcut("v", modifiers: .command)
+    }
+
+    /// Where a ⌘V that DID reach the button should go — the gate in front of
+    /// ``PasteRoute``, which only ever answers for the collection.
+    enum PasteDispatch: Equatable {
+        /// A field editor holds first responder: the toolbar search field, or the
+        /// sidebar's rename / draft cell. The keystroke is that field's.
+        case fieldEditor
+        /// Nobody is typing — the collection takes it, and ``resolvePaste`` decides how.
+        case collection
+        /// The library is still opening. The button is `disabled` on the same condition,
+        /// so this is the belt to that brace rather than a reachable state.
+        case ignore
+    }
+
+    /// Resolve a ⌘V against who holds the keyboard, BEFORE any pasteboard is read.
+    ///
+    /// The field editor is checked FIRST, ahead of readiness: typing in the search field
+    /// is not the library's to gate, and a ⌘V swallowed because the model happened to
+    /// still be opening would be the same bug in a narrower window.
+    static func resolvePasteDispatch(fieldEditorFocused: Bool, isReady: Bool) -> PasteDispatch {
+        if fieldEditorFocused { return .fieldEditor }
+        return isReady ? .collection : .ignore
     }
 
     /// Resolve a ⌘V from the app-private payload on the board (if any) and the
@@ -1105,8 +1180,18 @@ struct CollectionView: View {
     /// "nil, not empty" (065 §2.4): a copy that carried no assets writes NO payload,
     /// and ``AssetDragPayload/internalMarker`` grants no drop semantics — neither may
     /// stop the chain, so both fall through to the importer.
-    static func resolvePaste(payload: AssetDragPayload?, target: UUID) -> PasteRoute {
-        guard let payload, !payload.assetIDs.isEmpty else { return .importExternal }
+    ///
+    /// `hasBoardElements` is the ONE thing allowed to stop it there (464): a board
+    /// copy of nothing but text boxes and frames writes no asset payload either, and
+    /// the importer would read the words beside it as external content. A MIXED board
+    /// copy is unaffected — its payload is present and non-empty, so it never reaches
+    /// this guard and its assets still add.
+    static func resolvePaste(
+        payload: AssetDragPayload?, target: UUID, hasBoardElements: Bool = false
+    ) -> PasteRoute {
+        guard let payload, !payload.assetIDs.isEmpty else {
+            return hasBoardElements ? .nothing : .importExternal
+        }
         guard payload.sourceCollectionID != target else { return .alreadyMembers }
         let source = payload.sourceCollectionID == AssetDragPayload.nilSourceID
             ? nil : payload.sourceCollectionID
@@ -1121,16 +1206,40 @@ struct CollectionView: View {
     ///    blob file URL sitting next to it and RE-IMPORT the asset as a fresh
     ///    `.localDrag` capture, losing its note, tags and provenance (019).
     /// 2. **Importable external content** — files, images, URLs — unchanged, so a
-    ///    file copied in Finder still imports exactly as before.
+    ///    file copied in Finder still imports exactly as before — unless the board
+    ///    carries a copy of nothing but board ELEMENTS, which is nothing this grid
+    ///    can hold and so is refused outright (464).
     ///
     /// This is the paste-side twin of ``handleDrop(_:)``, which has refused providers
     /// carrying `.assetIDs` since 192 for the same reason.
     private func paste() {
-        guard model.isReady else { return }
+        switch Self.resolvePasteDispatch(
+            fieldEditorFocused: isSearchFieldEditor(NSApp.keyWindow?.firstResponder),
+            isReady: model.isReady) {
+        case .ignore:
+            return
+        case .fieldEditor:
+            // Hand the keystroke back to the field being typed in. A key equivalent is
+            // dispatched before the field editor sees the event — the precedence
+            // `SpaceView`'s undo / duplicate / z-order bindings document as measured —
+            // so without this the search field and the sidebar's rename cell answer ⌘V
+            // by importing the clipboard into the collection behind them instead of
+            // pasting text. `sendAction(to: nil)` walks the responder chain, which is
+            // what Edit ▸ Paste would have done had the binding not been in front of it.
+            NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
+        case .collection:
+            pasteIntoCollection()
+        }
+    }
+
+    /// The collection's own ⌘V, once ``resolvePasteDispatch`` has ruled out a field
+    /// editor: decode the board and take one of ``PasteRoute``'s three branches.
+    private func pasteIntoCollection() {
         let pasteboard = NSPasteboard.general
         let target = importTargetID
         switch Self.resolvePaste(
-            payload: AssetDragPayload.decode(from: pasteboard), target: target) {
+            payload: AssetDragPayload.decode(from: pasteboard), target: target,
+            hasBoardElements: SpaceElementPayload.decode(from: pasteboard) != nil) {
         case let .add(assetIDs, source):
             // Stale ids (copy → delete → paste) fail CLOSED: `addAssets` throws
             // `.notFound` inside its transaction, so nothing is half-added, and
@@ -1138,6 +1247,8 @@ struct CollectionView: View {
             model.copyToCollection(assetIDs: assetIDs, to: target, from: source)
         case .alreadyMembers:
             model.reportAlreadyInCollection()
+        case .nothing:
+            return
         case .importExternal:
             let inputs = DirectInputReader.inputs(from: pasteboard, into: target, now: Date())
             dispatch(inputs: inputs, webURL: ImportPasteboard.firstWebURL(on: pasteboard))
@@ -1378,6 +1489,25 @@ private struct CollectionDetailHost: View {
         // is the gate here for the same reason `close()` reads it: it is the item the
         // user is actually looking at after any number of steps.
         .focusedSceneValue(\.deleteVerbs, session.state.map(pageDeleteVerbs))
+        // Edit ▸ Copy as Text (⌥⌘C, 465) on the item being LOOKED AT — the same
+        // "which item" rule as the verbs above, for the same reason: ← / → move the
+        // page without moving the grid's cursor.
+        .focusedSceneValue(\.copyAsText, session.state.map(pageCopyAsText))
+    }
+
+    /// The page's ⌥⌘C (465): the words of the one item on screen — a colour's hex, a
+    /// link's or tweet's URL — and nothing at all for a picture, which is what ⌘C is
+    /// for.
+    private func pageCopyAsText(for state: DetailSession.State) -> CopyAsTextVerb {
+        let detail = state.detail
+        return CopyAsTextVerb(
+            canCopy: AssetExport.mayHaveText(detail.asset),
+            copy: {
+                guard let words = AssetExport.copiedText(
+                    assets: [(asset: detail.asset, source: Optional(detail.source))],
+                    blobURL: { model.blobURL(forAsset: $0) }) else { return }
+                CopyText.write(only: words, to: .general)
+            })
     }
 
     /// The Edit-menu verbs for the item the page is SHOWING, routed through the same

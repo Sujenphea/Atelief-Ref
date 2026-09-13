@@ -13,6 +13,7 @@
 //
 
 import AppKit
+import AtelierArchive
 import AtelierCore
 import AtelierIngestion
 import CanvasRenderer
@@ -172,6 +173,24 @@ struct SpaceView: View {
                 let assetIDs = space.selectedTileIDs(in: content)
                     .compactMap { content.detail(forTileID: $0)?.asset?.id }
                 model.requestDelete(assetIDs: assetIDs)
+            }))
+        // Edit ▸ Copy as Text (⌥⌘C, 465) — the board's words: its text boxes, and
+        // the media-less assets among the selection, in z-order. `canCopy` reads
+        // `items` (cheap, and words need no geometry); the copy itself reads
+        // `placedItems`, whose z is the LIVE stacking a drag may have moved.
+        .focusedSceneValue(\.copyAsText, CopyAsTextVerb(
+            canCopy: space.selectedRows(from: space.items).contains { detail in
+                if let asset = detail.asset { return AssetExport.mayHaveText(asset) }
+                return detail.item.kind == .text
+                    && (detail.item.style.flatMap { ElementStyle(jsonString: $0)?.text }?
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            },
+            copy: {
+                let rows = space.selectedRows(from: space.placedItems)
+                    .sorted { $0.item.z < $1.item.z }
+                guard let words = Self.copiedText(
+                    rows, blobURL: { model.blobURL(forAsset: $0) }) else { return }
+                CopyText.write(only: words, to: .general)
             }))
         // Expose the board's export to the File-menu command (052 · B3): default
         // config (PDF, single page) for the same selection-or-whole-board rows.
@@ -365,13 +384,15 @@ struct SpaceView: View {
                     model.requestDelete(assetIDs: assetIDs)
                 },
                 onCopyTiles: { tileIDs in
-                    // ⌘C writes TWO representations of the same selection (065), so the
-                    // destination decides what a copy meant rather than the source:
+                    // ⌘C writes THREE representations of the same selection (065,
+                    // 464), so the destination decides what a copy meant rather than
+                    // the source:
                     //
                     //  - the asset one (052 · B1) — z-ordered, elements skipped — which
                     //    is what a collection or another app can use;
                     //  - the board one, which keeps every row INCLUDING frames and text
-                    //    boxes, with their relative layout, for pasting onto a board.
+                    //    boxes, with their relative layout, for pasting onto a board;
+                    //  - the WORDS (464), for an app that takes nothing else.
                     //
                     // Before this, ⌘C on a text box put nothing on the pasteboard at
                     // all, because the asset representation is the only one there was.
@@ -383,19 +404,25 @@ struct SpaceView: View {
                     }
                     // Order is load-bearing: `copyToPasteboard` CLEARS the pasteboard
                     // before writing, so the board representation has to go on after
-                    // it. And a selection of only text boxes skips it entirely — it
-                    // would clear, write nothing, and report "0 copied" at the user for
-                    // a copy that in fact succeeded.
-                    if assets.isEmpty {
-                        NSPasteboard.general.clearContents()
-                    } else {
-                        // A board owns PLACEMENTS, not memberships (019 · C1), so the
-                        // asset representation's private payload carries the
-                        // nil-source sentinel: pasting it into a collection is
-                        // always an add, never a same-collection no-op.
-                        model.copyToPasteboard(
-                            assets: assets, sourceCollectionID: AssetDragPayload.nilSourceID)
-                    }
+                    // it. The WORDS need no third call — they are handed to that same
+                    // write, which is the only way they can land in ONE string item
+                    // rather than duplicating the asset text it would derive itself.
+                    //
+                    // A board owns PLACEMENTS, not memberships (019 · C1), so the asset
+                    // representation's private payload carries the nil-source sentinel:
+                    // pasting it into a collection is always an add, never a
+                    // same-collection no-op.
+                    //
+                    // A selection of only text boxes used to skip this call and clear
+                    // by hand, because it would have reported "0 copied" at the user
+                    // for a copy that in fact succeeded. `alsoCopied` is what makes the
+                    // call sayable in that case: the elements are counted, so the
+                    // report is true whether or not any asset came with them (464).
+                    model.copyToPasteboard(
+                        assets: assets, sourceCollectionID: AssetDragPayload.nilSourceID,
+                        alsoCopied: details.count - assets.count,
+                        text: Self.copiedText(
+                            details, blobURL: { model.blobURL(forAsset: $0) }))
                     copyElementsToPasteboard(details.map(\.item))
                 },
                 onMoveTile: { tileID, worldOrigin in
@@ -944,6 +971,40 @@ struct SpaceView: View {
     /// Appends — the caller has already cleared. An empty selection writes nothing
     /// rather than an empty payload, so a later paste falls through to the branches
     /// below instead of matching a copy that carried nothing.
+    /// The WORDS of a copied selection (464) — the flavour an app that takes nothing
+    /// but text will read, in the board's own z-order.
+    ///
+    /// Handed to ``IngestionModel/copyToPasteboard(assets:sourceCollectionID:alsoCopied:text:)``
+    /// rather than written here, because it is the WHOLE selection's words and that
+    /// method would otherwise derive them from the assets alone: a text box sitting
+    /// between two links belongs BETWEEN them, and only this caller holds both halves
+    /// in one order.
+    ///
+    /// What each row contributes:
+    ///
+    ///  - a **text box** — its string;
+    ///  - a **frame** — nothing. `style.text` is a frame's label: furniture that
+    ///    names a region, not content the user copied;
+    ///  - an **asset** — whatever ``AssetExport/copyEntry(asset:source:blobURL:)``
+    ///    calls text, so media are cut out by exactly the rule the byte write uses.
+    ///    A link card's words are its URL whether or not a preview was captured
+    ///    (466); only a picture or a video has nothing to say.
+    ///
+    /// Static and pure so the rule is testable without a board, a model or a
+    /// pasteboard; `blobURL` is the one thing it cannot know on its own.
+    static func copiedText(
+        _ details: [SpaceItemDetail], blobURL: (Asset) -> URL?
+    ) -> String? {
+        CopyText.joined(details.map { detail -> String? in
+            guard let asset = detail.asset else {
+                guard detail.item.kind == .text else { return nil }
+                return detail.item.style.flatMap { ElementStyle(jsonString: $0)?.text }
+            }
+            return AssetExport.copyEntry(
+                asset: asset, source: detail.source, blobURL: blobURL(asset))?.text
+        })
+    }
+
     private func copyElementsToPasteboard(_ rows: [SpaceItem]) {
         guard !rows.isEmpty,
               let data = try? SpaceElementPayload(items: rows).pasteboardData() else { return }
@@ -957,7 +1018,8 @@ struct SpaceView: View {
     /// 1. **A copied piece of a board** — rebuilt with its layout intact. First,
     ///    because our own representation is the most specific thing on the pasteboard
     ///    and the other branches would happily consume a weaker one instead (a copied
-    ///    text box also puts its string on the pasteboard as plain text).
+    ///    text box also puts its string on the pasteboard as plain text —
+    ///    `copyTextToPasteboard`, 464).
     /// 2. **Assets copied elsewhere in the app** (the grid, search, a detail page) —
     ///    PLACED by id, not re-imported. Above the importer for the 019 reason: the
     ///    same copy also carries blob file URLs, and importing those would rebuild

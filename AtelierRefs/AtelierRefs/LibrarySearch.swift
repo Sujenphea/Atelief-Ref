@@ -15,6 +15,7 @@
 //
 
 import AppKit
+import AtelierArchive
 import AtelierCore
 import AtelierIngestion
 import AtelierTokens
@@ -1290,6 +1291,24 @@ private struct LibrarySearchResults: View {
             canRemove: false,
             remove: {},
             destroy: { requestDeleteTargets() }))
+        // Edit ▸ Copy as Text (⌥⌘C, 465) — the hits' words, over the same selection
+        // and in the same result order ⌘C copies.
+        .focusedSceneValue(\.copyAsText, copyAsText)
+    }
+
+    /// Search's ⌥⌘C (465): the words of the selected hits — a colour's hex, a link's
+    /// or tweet's URL — and nothing for a hit that has a picture.
+    private var copyAsText: CopyAsTextVerb {
+        let ids = selectionStore.selection.ids
+        let selected = items.filter { ids.contains($0.item.id) }
+        return CopyAsTextVerb(
+            canCopy: selected.contains { AssetExport.mayHaveText($0.asset) },
+            copy: {
+                guard let words = AssetExport.copiedText(
+                    assets: selected.map { (asset: $0.asset, source: Optional($0.source)) },
+                    blobURL: { model.blobURL(forAsset: $0) }) else { return }
+                CopyText.write(only: words, to: .general)
+            })
     }
 
     /// The keyword / meaning mode toggle (047 · 3a · 10A), relocated out of the native

@@ -14,6 +14,7 @@ import AppKit
 import AtelierArchive
 import AtelierCore
 import Foundation
+import SwiftUI
 import Testing
 import UniformTypeIdentifiers
 @testable import AtelierRefs
@@ -104,11 +105,14 @@ struct AssetPasteboardEntryTests {
         }
     }
 
-    // 052 · B1 regression (the "viktoroddy" tweet): a link/tweet whose IMAGE was
-    // captured (og:image / card image) renders as an image card, so ⌘C must copy the
-    // image FILE, not the URL text — otherwise a paste into Finder fails.
+    // 052 · B1 (the "viktoroddy" tweet): a link/tweet whose IMAGE was captured
+    // (og:image / card image) resolves to the image FILE, not the URL text.
+    //
+    // This is now the EXPORT rule and no longer the copy one (466). The originals
+    // export and the share sheet still mean the bytes on disk; ⌘C means the link,
+    // and `CopyEntryTests` below asserts the other half of that split.
 
-    @Test("a link with a captured og:image copies as the image file, not its URL")
+    @Test("a link with a captured og:image EXPORTS as the image file, not its URL")
     func linkWithImageIsFile() throws {
         try Fixture.withTempPNG { url in
             let entry = AssetExport.pasteboardEntry(
@@ -122,7 +126,7 @@ struct AssetPasteboardEntryTests {
         }
     }
 
-    @Test("a tweet with a captured card image copies as the image file, not its permalink")
+    @Test("a tweet with a captured card image EXPORTS as the image file, not its permalink")
     func tweetWithCardImageIsFile() throws {
         try Fixture.withTempPNG { url in
             let entry = AssetExport.pasteboardEntry(
@@ -408,6 +412,59 @@ struct AssetPasteboardPayloadTests {
     }
 }
 
+// MARK: - Paste dispatch (who the ⌘V belongs to, before the board is read)
+
+/// The gate in FRONT of `resolvePaste`, added after a production report that the item
+/// detail page's Name / Note fields could not be pasted into: the keystroke imported the
+/// clipboard into the collection behind the page instead.
+///
+/// The cause is the precedence `SpaceView` documents as measured — a sibling
+/// `keyboardShortcut` is dispatched BEFORE the event reaches the first responder — so
+/// the grid's hidden ⌘V button answered for every text field in the window. Two rules
+/// close it, and they are asserted here rather than only against a live window: the
+/// binding is withdrawn while the page is up, and a ⌘V that still reaches the button
+/// while a field editor holds the keyboard is handed back to the responder chain.
+@Suite("Grid paste dispatch")
+struct GridPasteDispatchTests {
+
+    @Test("the binding is withdrawn while the detail page is up")
+    func withdrawnOnDetailPage() {
+        #expect(CollectionView.pasteShortcut(detailPresented: true) == nil)
+    }
+
+    @Test("…and carried on the grid")
+    func boundOnGrid() {
+        #expect(CollectionView.pasteShortcut(detailPresented: false)
+                == KeyboardShortcut("v", modifiers: .command))
+    }
+
+    @Test("a focused field editor keeps its own ⌘V")
+    func fieldEditorWins() {
+        #expect(CollectionView.resolvePasteDispatch(fieldEditorFocused: true, isReady: true)
+                == .fieldEditor)
+    }
+
+    @Test("the field editor is checked BEFORE readiness")
+    func fieldEditorBeatsUnready() {
+        // Typing in the search field is not the library's to gate: a ⌘V swallowed
+        // because the model was still opening is the same bug in a narrower window.
+        #expect(CollectionView.resolvePasteDispatch(fieldEditorFocused: true, isReady: false)
+                == .fieldEditor)
+    }
+
+    @Test("with nobody typing, the collection takes it")
+    func collectionOtherwise() {
+        #expect(CollectionView.resolvePasteDispatch(fieldEditorFocused: false, isReady: true)
+                == .collection)
+    }
+
+    @Test("an unopened library ignores the keystroke rather than importing")
+    func unreadyIgnores() {
+        #expect(CollectionView.resolvePasteDispatch(fieldEditorFocused: false, isReady: false)
+                == .ignore)
+    }
+}
+
 // MARK: - Paste routing (pure decode + branch, no DB — 019 · C2)
 
 @Suite("Grid paste routing (019 · C2)")
@@ -484,5 +541,460 @@ struct GridPasteRoutingTests {
         // membership-less copy can never accidentally read as a same-collection
         // paste into a real target.
         #expect(AssetDragPayload.nilSourceID != target)
+    }
+
+    @Test("a board copy of ELEMENTS ONLY is refused, not imported (464)")
+    func boardElementsAreRefused() {
+        // The board writes no asset payload for a text-box-only copy, so without
+        // the flag this falls to the importer — which would read the words beside
+        // it and capture a text box reading `https://…` as a fresh link.
+        #expect(CollectionView.resolvePaste(
+            payload: nil, target: target, hasBoardElements: true) == .nothing)
+        #expect(CollectionView.resolvePaste(
+            payload: .internalMarker, target: target, hasBoardElements: true) == .nothing)
+    }
+
+    @Test("a MIXED board copy still adds its assets — the flag never reaches it")
+    func boardElementsBesideAssetsStillAdd() {
+        let ids = [UUID()]
+        #expect(CollectionView.resolvePaste(
+            payload: AssetDragPayload(
+                assetIDs: ids, sourceCollectionID: AssetDragPayload.nilSourceID),
+            target: target, hasBoardElements: true)
+                == .add(assetIDs: ids, source: nil))
+    }
+
+    @Test("without board elements the guard is exactly what it was")
+    func noBoardElementsUnchanged() {
+        #expect(CollectionView.resolvePaste(
+            payload: nil, target: target, hasBoardElements: false) == .importExternal)
+    }
+}
+
+// MARK: - The plain-text flavour (464)
+//
+// ⌘C's third representation: the WORDS. Media are cut out of it — an image
+// contributes nothing rather than its file path — and every piece lands on ONE
+// pasteboard item, because a receiver reads item 0 and stops.
+
+@Suite("CopyText")
+struct CopyTextTests {
+
+    @Test("pieces join in the order given, separated by a blank line")
+    func joinsInOrder() {
+        #expect(CopyText.joined(["one", "two", "three"]) == "one\n\ntwo\n\nthree")
+    }
+
+    @Test("each piece is trimmed and the empty ones drop out")
+    func trimsAndDrops() {
+        #expect(CopyText.joined(["  hi  ", nil, "", "   ", "\n there \n"]) == "hi\n\nthere")
+    }
+
+    @Test("nothing survivable is nil, never an empty string (065 §2.4)")
+    func nothingIsNil() {
+        #expect(CopyText.joined([]) == nil)
+        #expect(CopyText.joined([nil, "", "   "]) == nil)
+    }
+
+    @Test("a single piece is itself — no separator, no decoration")
+    func singlePiece() {
+        #expect(CopyText.joined([nil, "just this"]) == "just this")
+    }
+
+    @Test("a file item carries no words of its own — media is cut out for free")
+    func fileItemHasNoString() {
+        // The measurement the design rests on: an `NSURL` on a pasteboard declares
+        // `public.file-url` and nothing else, so a copied picture contributes no
+        // string and a text field never pastes a blob path.
+        Fixture.withScratchPasteboard { pb in
+            pb.clearContents()
+            pb.writeObjects([URL(fileURLWithPath: "/tmp/blob-ab12.png") as NSURL])
+            #expect(pb.string(forType: .string) == nil)
+        }
+    }
+
+    @Test("the pasteboard concatenates N string items with a \\n of its own")
+    func pasteboardConcatenatesItems() {
+        // Why the pieces are joined HERE instead of written as one item each: left
+        // to the pasteboard, a copy of three colours reads with a separator this
+        // code never chose. Asserted so the day AppKit changes it is a red test,
+        // not a silently different paste.
+        Fixture.withScratchPasteboard { pb in
+            pb.clearContents()
+            pb.writeObjects(["a" as NSString, "b" as NSString])
+            #expect(pb.string(forType: .string) == "a\nb")
+        }
+    }
+}
+
+// MARK: - The writer's own plain-text join (464)
+
+@Suite("AssetPasteboardWriter: the plain-text flavour (464)", .serialized)
+struct AssetPasteboardWriterTextTests {
+
+    @Test("EVERY text entry pastes, as ONE item with OUR separator")
+    func allTextEntriesJoin() {
+        // Three colours used to go on as three string items, and the pasteboard
+        // then read them back joined by a `\n` this code never chose.
+        Fixture.withScratchPasteboard { pb in
+            let selection = ExportSelection(
+                entries: [.text("#ff0000"), .text("#00ff00"), .text("#0000ff")], skipped: 0)
+            #expect(AssetPasteboardWriter.write(selection, to: pb) == 3)
+            #expect(pb.string(forType: .string) == "#ff0000\n\n#00ff00\n\n#0000ff")
+            let strings = pb.readObjects(forClasses: [NSString.self], options: nil) as? [String] ?? []
+            #expect(strings == ["#ff0000\n\n#00ff00\n\n#0000ff"])
+        }
+    }
+
+    @Test("a mixed copy pastes the WORDS as text and the FILE as a file")
+    func mediaIsCutOutOfTheText() {
+        Fixture.withTempPNG { url in
+            Fixture.withScratchPasteboard { pb in
+                let selection = ExportSelection(
+                    entries: [
+                        .file(AssetExportItem(
+                            blobURL: url, filename: url.lastPathComponent, utType: .png)),
+                        .text("https://x.example"),
+                    ],
+                    skipped: 0)
+                AssetPasteboardWriter.write(selection, to: pb)
+                // The words only — the picture contributes none.
+                #expect(pb.string(forType: .string) == "https://x.example")
+                // …and the file is untouched: Finder and Preview see what they saw.
+                let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
+                #expect(urls.contains(url))
+            }
+        }
+    }
+
+    @Test("a media-only copy puts no string on the board at all")
+    func mediaOnlyWritesNoWords() {
+        Fixture.withTempPNG { url in
+            Fixture.withScratchPasteboard { pb in
+                let selection = ExportSelection(
+                    entries: [.file(AssetExportItem(
+                        blobURL: url, filename: url.lastPathComponent, utType: .png))],
+                    skipped: 0)
+                AssetPasteboardWriter.write(selection, to: pb)
+                #expect(pb.string(forType: .string) == nil)
+            }
+        }
+    }
+
+    @Test("a caller's own words REPLACE the ones the selection would have derived")
+    func callerTextOverrides() {
+        // The board's case: its text boxes are not assets, so it hands over the
+        // whole selection's words — interleaved in ITS order — and the derivation
+        // from the assets alone must not also go on.
+        Fixture.withScratchPasteboard { pb in
+            let selection = ExportSelection(entries: [.text("#ff0000")], skipped: 0)
+            AssetPasteboardWriter.write(
+                selection, to: pb, text: "a note\n\n#ff0000\n\nanother note")
+            #expect(pb.string(forType: .string) == "a note\n\n#ff0000\n\nanother note")
+        }
+    }
+
+    @Test("words with NO entries is still a copy — the board's text-only ⌘C")
+    func wordsWithoutEntriesStillWrite() {
+        Fixture.withScratchPasteboard { pb in
+            let written = AssetPasteboardWriter.write(
+                ExportSelection(entries: [], skipped: 0), to: pb, text: "just a text box")
+            // Zero ENTRIES — the byte-side count the report is about — but the
+            // words are on the board.
+            #expect(written == 0)
+            #expect(pb.string(forType: .string) == "just a text box")
+        }
+    }
+}
+
+// MARK: - The board's words (464)
+//
+// What a board ⌘C says to an app that takes nothing but text: the text boxes'
+// strings and the media-less assets' words, in z-order, with the media cut out.
+// Pure — no board, no model, no pasteboard.
+
+@Suite("SpaceView.copiedText")
+struct SpaceCopiedTextTests {
+
+    private func element(kind: SpaceItemKind, text: String?, z: Int) -> SpaceItemDetail {
+        SpaceItemDetail(
+            item: SpaceItem(
+                id: UUID(), spaceID: UUID(), kind: kind, assetID: nil,
+                x: 0, y: 0, w: 10, h: 10, z: z,
+                style: text.flatMap { ElementStyle(text: $0).jsonString() },
+                createdAt: Date(), updatedAt: Date()),
+            asset: nil, source: nil)
+    }
+
+    private func assetRow(_ asset: Asset, z: Int) -> SpaceItemDetail {
+        SpaceItemDetail(
+            item: SpaceItem(
+                id: UUID(), spaceID: UUID(), kind: .asset, assetID: asset.id,
+                x: 0, y: 0, w: 10, h: 10, z: z, style: nil,
+                createdAt: Date(), updatedAt: Date()),
+            asset: asset, source: Fixture.source())
+    }
+
+    @Test("a text box copies its string")
+    func textBoxCopiesItsString() {
+        #expect(SpaceView.copiedText(
+            [element(kind: .text, text: "hello", z: 0)], blobURL: { _ in nil }) == "hello")
+    }
+
+    @Test("a frame contributes nothing — its label is furniture, not content")
+    func frameLabelIsNotCopied() {
+        #expect(SpaceView.copiedText(
+            [element(kind: .frame, text: "Moodboard", z: 0)], blobURL: { _ in nil }) == nil)
+    }
+
+    @Test("an EMPTY text box drops out, and does not leave a blank line behind")
+    func emptyTextBoxDropsOut() {
+        let rows = [
+            element(kind: .text, text: "one", z: 0),
+            element(kind: .text, text: "   ", z: 1),
+            element(kind: .text, text: nil, z: 2),
+            element(kind: .text, text: "two", z: 3),
+        ]
+        #expect(SpaceView.copiedText(rows, blobURL: { _ in nil }) == "one\n\ntwo")
+    }
+
+    @Test("an image contributes nothing — the media is cut out of the words")
+    func imageIsCutOut() {
+        Fixture.withTempPNG { url in
+            let image = Fixture.asset(kind: .image, blobHash: "abcdef1234", mime: "image/png")
+            let rows = [assetRow(image, z: 0), element(kind: .text, text: "a caption", z: 1)]
+            #expect(SpaceView.copiedText(rows, blobURL: { _ in url }) == "a caption")
+        }
+    }
+
+    @Test("a media-LESS asset contributes its words, in the board's z-order")
+    func mediaLessAssetsContributeText() {
+        let color = Fixture.asset(kind: .color, payload: Fixture.colorPayload("#ff0000"))
+        let link = Fixture.asset(kind: .link, payload: Fixture.linkPayload("https://x.example"))
+        // Given out of z-order to prove the caller's order is what is honoured:
+        // `onCopyTiles` hands these over sorted, and nothing re-sorts them here.
+        let rows = [
+            assetRow(color, z: 0),
+            element(kind: .text, text: "between", z: 1),
+            assetRow(link, z: 2),
+        ]
+        #expect(SpaceView.copiedText(rows, blobURL: { _ in nil })
+                == "#ff0000\n\nbetween\n\nhttps://x.example")
+    }
+
+    @Test("a link that HAS an og:image still says its URL (466)")
+    func linkWithImageStillSaysItsURL() {
+        // The same rule the byte write uses (`copyEntry`), so the two can never
+        // disagree about what this row is. Before 466 the preview silenced it and a
+        // board's words came back empty for a selection of nothing but link cards.
+        Fixture.withTempPNG { url in
+            let link = Fixture.asset(
+                kind: .link, blobHash: "abcdef1234", mime: "image/png",
+                payload: Fixture.linkPayload("https://x.example"))
+            #expect(SpaceView.copiedText([assetRow(link, z: 0)], blobURL: { _ in url })
+                    == "https://x.example")
+        }
+    }
+
+    @Test("a selection with no words at all is nil, not an empty string")
+    func nothingIsNil() {
+        #expect(SpaceView.copiedText([], blobURL: { _ in nil }) == nil)
+        #expect(SpaceView.copiedText(
+            [element(kind: .frame, text: "Frame", z: 0)], blobURL: { _ in nil }) == nil)
+    }
+}
+
+// MARK: - Copy as Text (465)
+//
+// ⌥⌘C's flavour: ONE string item and nothing else. The absence is the feature —
+// a file URL beside the words is a copy every rich editor reads as a file,
+// because `availableType(from:)` answers in the order the RECEIVER asks.
+
+@Suite("CopyText.write(only:)", .serialized)
+struct CopyTextOnlyTests {
+
+    @Test("writes the words and NOTHING else")
+    func writesOnlyTheWords() {
+        Fixture.withScratchPasteboard { pb in
+            #expect(CopyText.write(only: "the caption", to: pb))
+            #expect(pb.string(forType: .string) == "the caption")
+            #expect(pb.pasteboardItems?.count == 1)
+            #expect(pb.availableType(from: [.fileURL, .string]) == .string)
+            #expect(!pb.canReadObject(forClasses: [NSURL.self], options: nil))
+        }
+    }
+
+    @Test("replaces a rich copy rather than adding to one")
+    func clearsTheRichCopyFirst() {
+        // The failure this prevents: ⌘C then ⌥⌘C leaving the file URL behind, so
+        // the very apps this command exists for still paste the file.
+        Fixture.withTempPNG { url in
+            Fixture.withScratchPasteboard { pb in
+                AssetPasteboardWriter.write(
+                    ExportSelection(
+                        entries: [.file(AssetExportItem(
+                            blobURL: url, filename: url.lastPathComponent, utType: .png))],
+                        skipped: 0),
+                    to: pb)
+                AssetPasteboardWriter.appendAssetIDs([UUID()], from: UUID(), to: pb)
+                #expect(pb.canReadObject(forClasses: [NSURL.self], options: nil))
+
+                CopyText.write(only: "the caption", to: pb)
+                #expect(pb.string(forType: .string) == "the caption")
+                #expect(!pb.canReadObject(forClasses: [NSURL.self], options: nil))
+                #expect(AssetDragPayload.decode(from: pb) == nil)
+                #expect(SpaceElementPayload.decode(from: pb) == nil)
+            }
+        }
+    }
+}
+
+@Suite("AssetExport: the words of an asset selection (465)")
+struct AssetCopiedTextTests {
+
+    @Test("media-less assets contribute their words, in selection order")
+    func mediaLessAssetsJoin() {
+        let color = Fixture.asset(kind: .color, payload: Fixture.colorPayload("#ff0000"))
+        let link = Fixture.asset(kind: .link, payload: Fixture.linkPayload("https://x.example"))
+        #expect(AssetExport.copiedText(
+            assets: [(asset: color, source: nil), (asset: link, source: nil)],
+            blobURL: { _ in nil }) == "#ff0000\n\nhttps://x.example")
+    }
+
+    @Test("a picture contributes nothing — not even its path")
+    func pictureContributesNothing() {
+        Fixture.withTempPNG { url in
+            let image = Fixture.asset(kind: .image, blobHash: "abcdef1234", mime: "image/png")
+            let color = Fixture.asset(kind: .color, payload: Fixture.colorPayload("#00ff00"))
+            #expect(AssetExport.copiedText(
+                assets: [(asset: image, source: nil), (asset: color, source: nil)],
+                blobURL: { $0.id == image.id ? url : nil }) == "#00ff00")
+        }
+    }
+
+    @Test("a selection of pure media has no text copy at all")
+    func pureMediaIsNil() {
+        Fixture.withTempPNG { url in
+            let image = Fixture.asset(kind: .image, blobHash: "abcdef1234", mime: "image/png")
+            #expect(AssetExport.copiedText(
+                assets: [(asset: image, source: nil)], blobURL: { _ in url }) == nil)
+        }
+    }
+}
+
+@Suite("AssetExport.mayHaveText — the menu predicate (465, exact since 466)")
+struct MayHaveTextTests {
+
+    @Test("agrees with the copy rule on every row, blob or no blob")
+    func agreesWithTheExactRule() {
+        Fixture.withTempPNG { url in
+            let rows: [(Asset, URL?)] = [
+                (Fixture.asset(kind: .color, payload: Fixture.colorPayload("#ff0000")), nil),
+                (Fixture.asset(kind: .link, payload: Fixture.linkPayload("https://x.example")), nil),
+                (Fixture.asset(kind: .tweet, payload: Fixture.tweetPayload(id: "1", handle: "@a")), nil),
+                (Fixture.asset(kind: .image, blobHash: "abcdef1234", mime: "image/png"), url),
+                (Fixture.asset(kind: .video, blobHash: "abcdef1234", mime: "video/mp4"), url),
+                // A media-less kind whose payload will not parse reads as
+                // `.unknown` content: no bytes AND no words.
+                (Fixture.asset(kind: .color), nil),
+                // A link WITH an og:image: words either way, since 466.
+                (Fixture.asset(
+                    kind: .link, blobHash: "abcdef1234", mime: "image/png",
+                    payload: Fixture.linkPayload("https://x.example")), url),
+                (Fixture.asset(
+                    kind: .tweet, blobHash: "abcdef1234", mime: "image/png",
+                    payload: Fixture.tweetPayload(id: "9", handle: "@b")), url),
+            ]
+            for (asset, blob) in rows {
+                let exact = AssetExport.copyEntry(
+                    asset: asset, source: nil, blobURL: blob)?.text != nil
+                #expect(AssetExport.mayHaveText(asset) == exact,
+                        "disagreed on \(asset.kind)")
+            }
+        }
+    }
+
+    @Test("465's one disagreeing row \u{2014} a claimed blob whose file is gone \u{2014} agrees now")
+    func theOldDisagreementIsGone() {
+        // 465 had to accept this row disagreeing to keep the predicate cheap: the
+        // exact rule fell back to the link's URL, the cheap one greyed the menu out.
+        // 466 removed the trade \u{2014} a kind either has words or it does not, and no
+        // blob, present or missing, can take them away.
+        let orphan = Fixture.asset(
+            kind: .link, blobHash: "abcdef1234", mime: "image/png",
+            payload: Fixture.linkPayload("https://x.example"))
+        let missing = URL(fileURLWithPath: "/tmp/definitely-not-here-\(UUID().uuidString).png")
+        #expect(AssetExport.copyEntry(
+            asset: orphan, source: nil, blobURL: missing)?.text == "https://x.example")
+        #expect(AssetExport.mayHaveText(orphan))
+    }
+}
+
+// MARK: - The copy rule (466)
+//
+// ⌘C means the asset, not the bytes it happens to hold: a link card is a page, and
+// its preview is decoration the app fetched. The export rule is unchanged and still
+// asserted above \u{2014} the two now differ, deliberately.
+
+@Suite("AssetExport.copyEntry")
+struct CopyEntryTests {
+
+    @Test("a link with an og:image COPIES as its URL")
+    func linkCopiesAsItsURL() throws {
+        try Fixture.withTempPNG { url in
+            let link = Fixture.asset(
+                kind: .link, blobHash: "0f1e2d3c", mime: "image/png",
+                payload: Fixture.linkPayload("https://example.com/a"))
+            #expect(AssetExport.copyEntry(asset: link, source: nil, blobURL: url)
+                    == .text("https://example.com/a"))
+            // …while the export rule still resolves the same asset to its file.
+            guard case .file = try #require(
+                AssetExport.pasteboardEntry(asset: link, source: nil, blobURL: url)) else {
+                Issue.record("the export rule should still yield the og:image"); return
+            }
+        }
+    }
+
+    @Test("a tweet with a card image COPIES as its permalink")
+    func tweetCopiesAsItsPermalink() {
+        Fixture.withTempPNG { url in
+            let tweet = Fixture.asset(
+                kind: .tweet, blobHash: "2e7cb391", mime: "image/png",
+                payload: Fixture.tweetPayload(id: "123", handle: "@viktoroddy"))
+            #expect(AssetExport.copyEntry(asset: tweet, source: nil, blobURL: url)
+                    == .text("https://x.com/viktoroddy/status/123"))
+        }
+    }
+
+    @Test("an image and a video are untouched — the picture IS the thing saved")
+    func mediaStillCopiesAsBytes() throws {
+        try Fixture.withTempPNG { url in
+            for kind in [AssetKind.image, .video] {
+                let asset = Fixture.asset(kind: kind, blobHash: "abcdef1234", mime: "image/png")
+                guard case .file = try #require(
+                    AssetExport.copyEntry(asset: asset, source: nil, blobURL: url)) else {
+                    Issue.record("expected .file for \(kind)"); return
+                }
+            }
+        }
+    }
+
+    @Test("a colour is its hex, as it always was")
+    func colorIsUnchanged() {
+        let color = Fixture.asset(kind: .color, payload: Fixture.colorPayload("#ff0000"))
+        #expect(AssetExport.copyEntry(asset: color, source: nil, blobURL: nil) == .text("#ff0000"))
+    }
+
+    @Test("a link whose payload will not parse falls through to its bytes")
+    func unparseablePayloadFallsBackToBytes() throws {
+        // `.unknown` content has no words to prefer, so the byte rule still answers
+        // — a row this broken should still copy whatever it does have.
+        try Fixture.withTempPNG { url in
+            let broken = Fixture.asset(kind: .link, blobHash: "0f1e2d3c", mime: "image/png")
+            guard case .file = try #require(
+                AssetExport.copyEntry(asset: broken, source: nil, blobURL: url)) else {
+                Issue.record("expected .file for an unparseable link with bytes"); return
+            }
+        }
     }
 }

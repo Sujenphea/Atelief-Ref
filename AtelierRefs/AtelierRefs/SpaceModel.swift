@@ -391,6 +391,16 @@ final class SpaceModel: ObservableObject {
         Set(selectedItemIDs.compactMap { content.tileID(forSpaceItemID: $0) })
     }
 
+    /// The rows of `rows` that are SELECTED, in `rows` order (465).
+    ///
+    /// Takes the rows rather than reading ``items`` itself so a caller picks which
+    /// truth it needs: ``items`` is cheap and enough for anything that does not care
+    /// where a tile sits, ``placedItems`` builds the live content and is what a
+    /// z-ordered read must use.
+    func selectedRows(from rows: [SpaceItemDetail]) -> [SpaceItemDetail] {
+        rows.filter { selectedItemIDs.contains($0.item.id) }
+    }
+
     /// The board rows for EXPORT — each carrying its LIVE placement (052 · B3).
     /// A drag / arrange moves the tile in the in-memory ``SpaceContent`` and
     /// persists with `reload: false`, so ``items`` keeps stale pre-move x/y/z
