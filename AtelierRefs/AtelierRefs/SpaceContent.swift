@@ -203,10 +203,80 @@ final class SpaceContent: TileProvider, TileImageSource {
     /// answer to the same question, so they cannot disagree.
     func groupMembers(forTileID id: Int, in worldRect: CGRect) -> [Int] {
         guard let index = index(ofTileID: id), rows[index].item.kind == .frame else { return [] }
-        // Returns tile IDS, not array indices — the two are no longer the same thing,
-        // and the renderer keys its carried-set and membership wash on the id.
-        return tiles.filter { $0.id != id && worldRect.contains(Self.centre(of: $0)) }.map(\.id)
+        return Self.tileIDs(withCentreIn: worldRect, among: tiles, excluding: [id])
     }
+
+    /// The containment rule itself: every tile whose CENTRE falls inside `worldRect`,
+    /// less `excluded`. Static and `[Tile]`-only so the rule is one piece of code no
+    /// caller can paraphrase.
+    ///
+    /// Two questions ask it, and 062 §6's whole argument is that they must not be able
+    /// to disagree: "what does this frame contain?" (above, and so the resize wash and
+    /// the set a drag carries) and "what would a frame drawn HERE adopt?"
+    /// (``groupBounds(for:in:)``, 100 · P1). A ⌘G frame is born with exactly the
+    /// members the rect it was given implies, because the same function decided both.
+    ///
+    /// Centre, not intersection — a tile straddling the border belongs to whichever
+    /// side its middle is on, so a frame never half-owns anything.
+    ///
+    /// Returns tile IDS, not array indices — the two are no longer the same thing, and
+    /// the renderer keys its carried-set and membership wash on the id.
+    static func tileIDs(
+        withCentreIn worldRect: CGRect, among tiles: [Tile], excluding excluded: Set<Int>
+    ) -> [Int] {
+        tiles
+            .filter { !excluded.contains($0.id) && worldRect.contains(centre(of: $0)) }
+            .map(\.id)
+    }
+
+    // MARK: - Group in frame (100 · P1)
+
+    /// The rect a ⌘G frame would occupy for the tiles in `selected`, and the tiles it
+    /// would **adopt** — the members it will have that the user never selected (100 §3).
+    ///
+    /// Pure and static: `[Tile]` in, geometry out, no store and no database, so the rule
+    /// is testable the way ``CanvasArrange``'s align and distribute are. ⌘G creates an
+    /// ordinary frame and nothing else (100 §1), so everything the gesture decides is
+    /// decided here.
+    ///
+    /// `nil` below two tiles (100 §4) — one tile in a frame is not a group, and the
+    /// gesture would read as decoration. The caller's no-op is this `nil`.
+    ///
+    /// Adoption is unavoidable rather than a design choice: a bounding box contains its
+    /// members' centres by construction, and a stray tile sitting between them has its
+    /// centre in there too. Shrinking the box to exclude it was rejected (100 §3, option
+    /// 2) because for a tile dead in the middle no such box exists, so the shortcut would
+    /// sometimes silently do something other than what it says. It is reported instead,
+    /// for P3 to wash — the one piece of information the gesture produces that the user
+    /// cannot already see.
+    static func groupBounds(
+        for selected: Set<Int>, in tiles: [Tile]
+    ) -> (rect: CGRect, adopted: Set<Int>)? {
+        let members = tiles.filter { selected.contains($0.id) }
+        guard members.count >= 2 else { return nil }
+        let union = members.dropFirst().reduce(members[0].worldFrame) { $0.union($1.worldFrame) }
+        // Outset the UNION, not each member: the padding is the frame's margin, not a gap
+        // between its contents, which stay exactly where they were put. A negative inset
+        // grows a rect.
+        let rect = union.insetBy(dx: -groupPadding, dy: -groupPadding)
+        // Excluding the selection leaves precisely the adopted set — and it is the same
+        // call the finished frame's drag will make, against the same rect.
+        return (rect, Set(tileIDs(withCentreIn: rect, among: tiles, excluding: selected)))
+    }
+
+    /// The margin a ⌘G frame leaves around what it wraps — 100 §4, "a frame flush
+    /// against its contents reads as a bug".
+    ///
+    /// `CanvasArrange.gridSpacing` rather than a number of its own. 16 is already the
+    /// board's one world-space breathing unit: the gap a bulk add flows tiles in at
+    /// (`SpaceLayout.spacing`, which that constant mirrors) and the gap every reflow and
+    /// grid leaves between them. A frame standing a DIFFERENT distance from its contents
+    /// than the contents stand from each other would put a second, unexplained rhythm on
+    /// the board — and inventing a number here is how a board ends up with two.
+    ///
+    /// It is also load-bearing, not decoration: the padded band is part of the frame, so
+    /// a tile whose centre falls in it is adopted. Growing this number adopts more.
+    static let groupPadding: CGFloat = CanvasArrange.gridSpacing
 
     /// The on-disk video file behind a tile, or `nil` if the tile isn't a video.
     func videoURL(forTileID id: Int) -> URL? {
