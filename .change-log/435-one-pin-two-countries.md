@@ -5,7 +5,7 @@ than the path.
 
 ## The find
 
-Pinterest serves a country subdomain by geography — `REDACTED`, observed live —
+Pinterest serves a country subdomain by geography — `nz.pinterest.com`, observed live —
 and does **not** redirect it to `www`. Both producers then compose provenance from whatever
 host the session happened to be on:
 
@@ -13,8 +13,8 @@ host the session happened to be on:
 - `bulk-pinterest.js:131` composed `https://${host}${seoUrl}` from the sweep's host.
 
 So one pin can carry two `originalURL`s. The committed fixture is itself an instance of
-this: `bulk-pinterest.test.js:30` pins `HOST = "REDACTED"`, and the expected
-provenance in that test read `https://REDACTEDREDACTED`.
+this: `bulk-pinterest.test.js:30` pins `HOST = "nz.pinterest.com"`, and the expected
+provenance in that test read `https://nz.pinterest.comnz.pinterest.com`.
 
 **Why that forks assets**, verified rather than assumed this time.
 `AtelierCore/Tests/AtelierCoreTests/ServicesInvariantTests.swift:77` is titled *"identical

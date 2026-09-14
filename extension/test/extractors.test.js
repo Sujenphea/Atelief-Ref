@@ -1009,7 +1009,7 @@ test("instagram: the DOM path agrees with bulk-instagram.js's composed permalink
 // ---------------------------------------------------------------------------
 
 test("canonicalPinterestHost: regional subdomains and the bare apex fold to www", () => {
-  for (const host of ["REDACTED", "uk.pinterest.com", "de.pinterest.com",
+  for (const host of ["nz.pinterest.com", "uk.pinterest.com", "de.pinterest.com",
                       "pinterest.com", "www.pinterest.com"]) {
     assert.equal(canonicalPinterestHost(host), "www.pinterest.com", `failed for ${host}`);
   }
@@ -1030,11 +1030,11 @@ test("canonicalPinterestHost: a suffix spoof is not folded", () => {
 
 test("pinterest: a pin captured on a regional subdomain gets the canonical permalink", () => {
   const h = harvest({
-    url: "https://REDACTED/",
+    url: "https://nz.pinterest.com/",
     media: [img("https://i.pinimg.com/474x/ab/cd/PIN.jpg", 736, 1104)],
   });
   const p = extractProvenance(h, {
-    linkUrl: "https://REDACTED/pin/804877764689837649/",
+    linkUrl: "https://nz.pinterest.com/pin/804877764689837649/",
     srcUrl: "https://i.pinimg.com/474x/ab/cd/PIN.jpg",
   });
   assert.equal(p.originalURL, "https://www.pinterest.com/pin/804877764689837649/");
@@ -1046,7 +1046,7 @@ test("pinterest: the same pin from two regions yields ONE originalURL", () => {
     harvest({ url: `https://${host}/`, media: [img("https://i.pinimg.com/474x/ab/cd/PIN.jpg", 736, 1104)] }),
     { linkUrl: `https://${host}/pin/804877764689837649/` },
   ).originalURL;
-  assert.equal(shot("REDACTED"), shot("www.pinterest.com"));
+  assert.equal(shot("nz.pinterest.com"), shot("www.pinterest.com"));
 });
 
 test("pinterest: a pinterest.co.uk capture keeps its own host", () => {

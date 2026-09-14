@@ -129,7 +129,7 @@ export function mapPinterestPin(pin, { host, cursor = null } = {}) {
   const creator = pin.pinner || pin.native_creator || null;
   const seoUrl = pin.seo_url || `/pin/${pinId}/`;
   // The PROVENANCE host is canonicalized so a sweep run from a regional subdomain
-  // (REDACTED) composes the same permalink the DOM extractor does. Only this
+  // (nz.pinterest.com) composes the same permalink the DOM extractor does. Only this
   // one; `buildResourceURL` below must keep the LIVE host or its requests leave the
   // session's region.
   const originalURL = host ? `https://${canonicalPinterestHost(host)}${seoUrl}` : seoUrl;

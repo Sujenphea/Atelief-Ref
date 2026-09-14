@@ -35,7 +35,7 @@ const rednoteBoardUrl = (boardId) => `https://www.rednote.com/board/${boardId}`;
 // ---- platformForHost -------------------------------------------------------
 
 test("platformForHost: pinterest across TLD/subdomain variants", () => {
-  for (const h of ["www.pinterest.com", "REDACTED", "pinterest.com", "www.pinterest.co.uk"]) {
+  for (const h of ["www.pinterest.com", "nz.pinterest.com", "pinterest.com", "www.pinterest.co.uk"]) {
     assert.equal(platformForHost(h), "pinterest", h);
   }
 });
@@ -109,7 +109,7 @@ test("extractPinterestBoardId: missing/empty/non-numeric/malformed → null (dri
 
 test("resolveSweepSpec: pinterest board → full spec (no resolveVideo in spec)", () => {
   const r = resolveSweepSpec({
-    url: "https://REDACTED/sujen/design-refs/", collageHref: collageHref("777"),
+    url: "https://nz.pinterest.com/sujen/design-refs/", collageHref: collageHref("777"),
   });
   assert.deepEqual(r, {
     ok: true,

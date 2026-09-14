@@ -127,7 +127,7 @@ export function toOrigName(src, { addIfAbsent = false } = {}) {
  * The canonical host for a Pinterest permalink: `www.pinterest.com` for the `.com` domain
  * and any of its regional subdomains, anything else untouched.
  *
- * Pinterest serves a country subdomain by geography — `REDACTED`, observed — and
+ * Pinterest serves a country subdomain by geography — `nz.pinterest.com`, observed — and
  * does NOT redirect it to `www`. Two sessions in two regions therefore produce two
  * `originalURL`s for one pin, and `ServicesInvariantTests`'s
  * "identical bytes but DIFFERENT provenance → two assets sharing the hash" is the rule

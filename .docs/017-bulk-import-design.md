@@ -195,14 +195,14 @@ runtime, never hardcoded.
 
 ### Cross-cutting findings
 - **Regional host — NO bug (verified 2026-07-03):** session resolved to
-  `REDACTED`. An initial read *suspected* `extractors/pinterest.js:match()`
+  `nz.pinterest.com`. An initial read *suspected* `extractors/pinterest.js:match()`
   wouldn't match regional subdomains, but running it proves otherwise:
   `hostIs` already suffix-matches (`host.endsWith("." + domain)`), so
-  `pinterest.match("https://REDACTED/…")` → `true`, and the manifest
+  `pinterest.match("https://nz.pinterest.com/…")` → `true`, and the manifest
   wildcard `*://*.pinterest.com/*` covers regional hosts. (`pinterest.co.uk` is a
   distinct TLD, correctly listed separately.) **No change needed.** The real bulk
   implication: the Pinterest SW driver must issue `/resource/…` calls against the
-  **active tab's origin** (e.g. `REDACTED`), NOT a hardcoded
+  **active tab's origin** (e.g. `nz.pinterest.com`), NOT a hardcoded
   `www.pinterest.com`, so cookies/CSRF match the session host.
 - **Tooling limit for fixtures:** Claude-in-Chrome cannot exfiltrate authed response
   bodies (by design). Response-shape fixtures for BOTH platforms must be captured by

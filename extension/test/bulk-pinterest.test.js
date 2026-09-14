@@ -27,7 +27,7 @@ const boardFeed = JSON.parse(
 const boardsList = JSON.parse(
   readFileSync(new URL("./fixtures/pinterest-boards.json", import.meta.url)));
 
-const HOST = "REDACTED";
+const HOST = "nz.pinterest.com";
 const firstPin = boardFeed.resource_response.data[0];
 
 // MARK: - pinIdFrom
@@ -81,7 +81,7 @@ test("mapPinterestPin: maps the fixture pin to a complete BulkItem", () => {
   assert.equal(item.cursor, "CUR0");
   assert.deepEqual(item.provenance, {
     platform: "pinterest",
-    // Canonicalized (21A): the sweep ran on REDACTED — see HOST — and the
+    // Canonicalized (21A): the sweep ran on nz.pinterest.com — see HOST — and the
     // provenance host folds to www so a capture of this pin from another region, or
     // by the DOM extractor, composes the SAME string. The API requests below still
     // use the live host.
@@ -225,7 +225,7 @@ test("isBoardEntry: only a DECLARED non-board type is excluded", () => {
 test("buildBoardFeedURL: encodes source_url + data; adds bookmarks only when resuming", () => {
   const first = buildBoardFeedURL({ host: HOST, boardId: "B1", boardUrl: "/u/board/" });
   const u = new URL(first);
-  assert.equal(u.origin + u.pathname, "https://REDACTED/resource/BoardFeedResource/get/");
+  assert.equal(u.origin + u.pathname, "https://nz.pinterest.com/resource/BoardFeedResource/get/");
   assert.equal(u.searchParams.get("source_url"), "/u/board/");
   const data = JSON.parse(u.searchParams.get("data"));
   assert.equal(data.options.board_id, "B1");
@@ -265,9 +265,9 @@ test("boardFeedHeaders: omits pws-handler / source-url when not supplied", () =>
 
 test("resourceNameFromURL: extracts the /resource/{Name}/get/ segment", () => {
   assert.equal(
-    resourceNameFromURL("https://REDACTED/resource/BoardFeedResource/get/?x=1"),
+    resourceNameFromURL("https://nz.pinterest.com/resource/BoardFeedResource/get/?x=1"),
     "BoardFeedResource");
-  assert.equal(resourceNameFromURL("https://REDACTED/other/path"), null);
+  assert.equal(resourceNameFromURL("https://nz.pinterest.com/other/path"), null);
 });
 
 test("makeResourceFetch: sends the pws-handler + derived source-url for a BoardFeed URL", async () => {
@@ -277,7 +277,7 @@ test("makeResourceFetch: sends the pws-handler + derived source-url for a BoardF
     return { ok: true, status: 200, json: async () => ({ resource_response: { data: [] } }) };
   };
   const fetchJson = makeResourceFetch({ appVersion: "1df0da9", csrfToken: "TOK", fetchImpl });
-  const url = buildBoardFeedURL({ host: "REDACTED", boardId: "B", boardUrl: "/u/b/" });
+  const url = buildBoardFeedURL({ host: "nz.pinterest.com", boardId: "B", boardUrl: "/u/b/" });
   await fetchJson(url);
   // The gatekeeper header is derived from the resource name in the URL — the exact
   // regression this guards (a bare request 403s live).
@@ -297,7 +297,7 @@ test("makeResourceFetch: no pws-handler for a resource with no PWS_HANDLERS entr
     return { ok: true, status: 200, json: async () => ({}) };
   };
   const fetchJson = makeResourceFetch({ appVersion: "v", csrfToken: "T", fetchImpl });
-  await fetchJson("https://REDACTED/resource/PinResource/get/?source_url=/pin/1/&data=%7B%7D");
+  await fetchJson("https://nz.pinterest.com/resource/PinResource/get/?source_url=/pin/1/&data=%7B%7D");
   assert.ok(!("x-pinterest-pws-handler" in sent));
 });
 
@@ -308,7 +308,7 @@ test("makeResourceFetch: BoardsResource now sends its own handler", async () => 
     return { ok: true, status: 200, json: async () => ({}) };
   };
   const fetchJson = makeResourceFetch({ appVersion: "v", csrfToken: "T", fetchImpl });
-  await fetchJson(buildBoardsURL({ host: "REDACTED", username: "u" }));
+  await fetchJson(buildBoardsURL({ host: "nz.pinterest.com", username: "u" }));
   assert.equal(sent["x-pinterest-pws-handler"], "www/[username].js");
 });
 
@@ -503,7 +503,7 @@ test("mapPinterestPin: the provenance host is canonical while API URLs keep the 
 });
 
 test("mapPinterestPin: two regions map one pin to one originalURL (the fork 21A closes)", () => {
-  const nz = mapPinterestPin(firstPin, { host: "REDACTED" });
+  const nz = mapPinterestPin(firstPin, { host: "nz.pinterest.com" });
   const www = mapPinterestPin(firstPin, { host: "www.pinterest.com" });
   assert.equal(nz.provenance.originalURL, www.provenance.originalURL);
 });
