@@ -5,6 +5,8 @@ ingests images and video from around the web — a Chrome extension, the iOS sha
 sheet, paste, drag-and-drop — organizes them into collections, and lets you
 browse them as a dense grid or arrange them on an infinite canvas.
 
+![Capturing a post from the browser straight into the library](assets/001-sweep-red-note.gif)
+
 Two principles drive every decision:
 
 1. **Local-first and fast.** Assets are downloaded and stored on-device, and
@@ -14,6 +16,15 @@ Two principles drive every decision:
 
 Long-form design docs live in `.docs/`; start with
 [`001-foundation-overview.md`](.docs/001-foundation-overview.md).
+
+## What it looks like
+
+| | |
+| --- | --- |
+| ![Home](assets/004-home.png) | ![A collection](assets/002-collection.png) |
+| **Home** — every space and collection, each with its cover and a live item count. | **A collection** — a dense justified grid. The badge on a thumbnail is a multi-image post kept together as one item. |
+| ![A space](assets/003-spaces.png) | ![Item detail](assets/005-item-detail.png) |
+| **A space** — the infinite canvas. The same assets, arranged by hand rather than by the grid. | **Item detail** — provenance on the right (platform, author, title, a link back), the colors the analyzer derived, and the collections and tags it belongs to. |
 
 ## Layout
 

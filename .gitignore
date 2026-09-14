@@ -51,3 +51,4 @@ DerivedData/
 # the Xcode project is converter output, regenerable in one command. Neither is source.
 /tier3-probe-stage/
 /tier3-probe-xcode/
+assets/*.mov
