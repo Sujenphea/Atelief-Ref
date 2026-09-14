@@ -217,6 +217,23 @@ export const SWEEP_HEARTBEAT_MS = 30_000;
  * (auth wall / app unreachable), which DOES pause the whole sweep. */
 export const MAX_ITEM_RETRIES = 4;
 
+/** How many FAILED sourceIds one checkpoint may carry (changelog 509). A resumed sweep
+ * excludes the notes that own them from its note-level pre-check, so this set is what stops
+ * a resume skipping a note that still owes an image — and it must survive a chain of
+ * resumes, which is what makes it grow.
+ *
+ * 200 is half `NOTE_OPEN_BUDGET`, and the size is not the reason for the cap: 200 rednote
+ * ids is ~6 KB in `storage.local`, nothing. It is a THRESHOLD OF MEANING. A run that
+ * stranded 200 items is not a sweep with some stray failures, it is a sweep against a dead
+ * CDN cookie or a full disk, and the cheap correct answer for one of those is the full
+ * re-walk the overflow forces — the pre-check is an optimisation, and this is the point
+ * where the board has stopped being the kind of thing it optimises.
+ *
+ * Exceeding it must FAIL SAFE (the reader disarms entirely), never truncate: a silently
+ * dropped id is a note skipped while it still owes an image, which is the exact loss the
+ * set exists to prevent. */
+export const CHECKPOINT_FAILED_ID_CAP = 200;
+
 // ---------------------------------------------------------------------------
 // Per-platform pacing overrides (002 · 13A). The globals above are the default;
 // a platform listed here overrides them so a more detection-sensitive site sweeps

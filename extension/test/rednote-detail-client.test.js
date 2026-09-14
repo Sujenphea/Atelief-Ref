@@ -20,7 +20,8 @@ import { readFileSync } from "node:fs";
 
 import {
   createNoteDetailWaiter, createNoteExpander, createPageFeedResetter, createPageNoteDriver,
-  createPageStepScroller, isRednoteChallenge, knownNoteIndex, noteIdOf, DETAIL_BUFFER_LIMIT,
+  createPageStepScroller, isRednoteChallenge, knownNoteIndex, noteIdOf, noteOfSourceId,
+  DETAIL_BUFFER_LIMIT,
   RednoteDetailRefusalError,
 } from "../src/rednote-detail-client.js";
 import { NOTE_DETAIL_REFUSAL_STREAK } from "../src/config.js";
@@ -789,6 +790,136 @@ test("ARMED: a note known only by its COVER is still opened (the mode trap)", as
 
   assert.deepEqual(state.opened, [cover.sourceId], "the toggle silently did nothing on an already-swept board");
   assert.ok(out.length > 1);
+});
+
+// MARK: - the halt boundary a RESUME arms up to (changelog 509)
+//
+// A resumed sweep re-walks the board from the top, so the index is worth consulting over
+// the stretch the halted run finished — and must not be consulted at the note it died in,
+// which `knownNoteIndex` calls done on one landed child of nine.
+
+/** `count` covers `n-0`…`n-<count>` plus an expander armed over ALL of them, boundary at
+ * `resumeFrom`. Every note is in the index, so any note that gets opened is one the
+ * boundary let through. */
+function armedWalk(count, resumeFrom) {
+  const covers = imageCovers(count);
+  const { expander, state } = scripted({
+    open: (item, waiter) => { waiter.onDetail(detailFor(noteIdOf(item))); return true; },
+  });
+  expander.arm({
+    knownSet: new Set(covers.map((cover) => `${cover.sourceId}:0`)),
+    armed: true,
+    resumeFrom,
+  });
+  return { covers, expander, state };
+}
+
+test("ARMED to a boundary: the watermark's own note is RE-OPENED, not skipped", async () => {
+  // The off-by-one this exists to prevent. The halt landed inside `n-2`, so `n-2` is the
+  // one note on the board that can have 3 of its 9 images ingested and still be in the
+  // index. Skipping it would lose the other six for good — no later sweep re-opens a note
+  // the index calls done.
+  const { covers, expander, state } = armedWalk(4, "n-2:3");
+
+  await expander.expandItems(covers);
+
+  assert.deepEqual(state.opened, ["n-2", "n-3"]);
+  assert.equal(expander.stats().skippedKnown, 2, "only the stretch in front of the halt");
+});
+
+test("ARMED to a boundary: a watermark that is a COVER names its note just the same", async () => {
+  // The halted run can stop on a note it had not expanded yet, whose item is keyed
+  // `<note_id>` with no `:` at all. Same boundary, same note.
+  const { covers, expander, state } = armedWalk(3, "n-1");
+
+  await expander.expandItems(covers);
+
+  assert.deepEqual(state.opened, ["n-1", "n-2"]);
+});
+
+test("ARMED to a boundary: the index is dropped, not just stepped over", async () => {
+  // Every note here is known, and every note after the boundary is opened anyway. A
+  // boundary that only excused the watermark itself would skip `n-2` and `n-3` — and those
+  // are exactly the notes the engine can have finished OUT OF ORDER past the watermark:
+  // ingested, so in the app's known-set, and incomplete.
+  const { covers, expander, state } = armedWalk(4, "n-1:0");
+
+  await expander.expandItems(covers);
+
+  assert.deepEqual(state.opened, ["n-1", "n-2", "n-3"]);
+  assert.equal(expander.stats().skippedKnown, 1);
+});
+
+test("ARMED to a boundary the walk never meets: the index stays armed to the end", async () => {
+  // The note was deleted, or the board reordered under the resume. Accepted, and the
+  // reasoning is in `arm`: a half-expanded note of THIS run has a landed child only where
+  // the run reached, and a note with no landed child is not in the index to be skipped.
+  const { covers, expander, state } = armedWalk(3, "n-gone:0");
+
+  await expander.expandItems(covers);
+
+  assert.deepEqual(state.opened, []);
+  assert.equal(expander.stats().skippedKnown, 3);
+});
+
+test("ARMED: a note that OWES a failed item is re-opened, boundary or no boundary", async () => {
+  // `n-1` sits well in front of the halt point, and the index says it is done — on the
+  // strength of the eight images that DID land. The ninth failed, and nothing else the
+  // expander can see says so.
+  const covers = imageCovers(4);
+  const { expander, state } = scripted({
+    open: (item, waiter) => { waiter.onDetail(detailFor(noteIdOf(item))); return true; },
+  });
+  expander.arm({
+    knownSet: new Set(covers.map((cover) => `${cover.sourceId}:0`)),
+    armed: true,
+    resumeFrom: "n-3",
+    excluded: ["n-1"],
+  });
+
+  await expander.expandItems(covers);
+
+  assert.deepEqual(state.opened, ["n-1", "n-3"], "the owed note, and the boundary onward");
+  assert.equal(expander.stats().skippedKnown, 2, "the exclusion is not a skip");
+});
+
+test("an exclusion without an armed index changes nothing", async () => {
+  // It can only ever make the pre-check skip LESS. With no pre-check there is nothing to
+  // exclude from, and the note is opened because that is what a disarmed sweep does.
+  const cover = coverItem(NORMAL_ROW);
+  const { expander, state } = scripted({
+    open: (item, waiter) => { waiter.onDetail(detailFor(noteIdOf(item))); return true; },
+  });
+  expander.arm({ knownSet: new Set([`${cover.sourceId}:0`]), armed: false, excluded: [cover.sourceId] });
+
+  await expander.expandItems([cover]);
+
+  assert.deepEqual(state.opened, [cover.sourceId]);
+  assert.equal(expander.stats().skippedKnown, 0);
+});
+
+test("a boundary without an armed index arms nothing (a resume the mode rule refused)", async () => {
+  const cover = coverItem(NORMAL_ROW);
+  const { expander, state } = scripted({
+    open: (item, waiter) => { waiter.onDetail(detailFor(noteIdOf(item))); return true; },
+  });
+  assert.equal(
+    expander.arm({ knownSet: new Set([`${cover.sourceId}:0`]), armed: false, resumeFrom: cover.sourceId }),
+    0);
+
+  await expander.expandItems([cover]);
+
+  assert.deepEqual(state.opened, [cover.sourceId]);
+});
+
+test("noteOfSourceId: a cover, a child, a stream, and the things that name no note", () => {
+  assert.equal(noteOfSourceId("note-1"), "note-1");
+  assert.equal(noteOfSourceId("note-1:3"), "note-1");
+  assert.equal(noteOfSourceId("note-1:v"), "note-1", "T6c's stream key belongs to its note");
+  assert.equal(noteOfSourceId(null), null);
+  assert.equal(noteOfSourceId(""), null);
+  assert.equal(noteOfSourceId(":leading"), null);
+  assert.equal(noteOfSourceId(123), null);
 });
 
 test("arm({ armed: false }) leaves the pre-check off even with a full known-set", async () => {

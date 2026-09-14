@@ -739,26 +739,118 @@ test("runBulkSweep: arms the note pre-check only after a CLEAN EXPANSION sweep",
     // Armed or not, it is always HANDED the known-set — the decision is the `armed` flag,
     // never a silently absent set.
     assert.deepEqual([...expansion.armings[0].knownSet], ["a"]);
+    // And a fresh start has no halt point to stop at, so the index — when it is armed at
+    // all — is armed for the whole walk (changelog 509).
+    assert.equal(expansion.armings[0].resumeFrom, null);
   }
 });
 
-test("runBulkSweep: a RESUMED sweep never arms the note pre-check", async () => {
-  // Same precondition as Instagram's early-stop: an outstanding checkpoint means the last
-  // attempt HALTED, and a halt can leave a note with 3 of its 9 images ingested — which
-  // looks expanded. The clean marker only speaks for the last sweep that COMPLETED.
-  const key = "atelier:bulk:rednote:board:b";
+// MARK: - the RESUME, and the halt boundary it arms up to (changelog 509)
+//
+// A resume used to arm nothing: `prior` truthy made `freshStart` false, so the clean marker
+// was never even read and the log said "prior sweep was absent". It is the run that needs
+// the pre-check most — it re-walks the board from the top, meeting every note the halted
+// run already expanded before it reaches one that owes anything. A live resume re-opened 34
+// notes to ingest nothing.
+//
+// What a resume may not trust is the index AT the halt point, where a note can have landed
+// 3 of its 9 images and read as done. So the checkpoint's watermark rides out to the
+// expander, which consults the index up to that item's note and drops it from there on.
+
+const RESUME_SPEC = { platform: "rednote", scope: "board:b", input: {}, expandNotes: true };
+const RESUME_KEY = "atelier:bulk:rednote:board:b";
+
+/** A resume of `RESUME_SPEC` over `checkpoint`, returning what the expander was armed with. */
+async function resumedArming(checkpoint) {
   const storage = fakeStorage({
-    [key]: { cursor: null, counts: {}, jobId: "JOB-prev" },
-    [`${key}:lastclean`]: { clean: true, mode: "expansion" },
+    [RESUME_KEY]: { cursor: null, counts: {}, jobId: "JOB-prev", ...checkpoint },
+    // Present and as permissive as it gets, to pin that the resume path answers off the
+    // CHECKPOINT: `lastClean` is read only on a fresh start and cannot be what armed this.
+    [`${RESUME_KEY}:lastclean`]: { clean: true, mode: "expansion" },
   });
   const { transport } = fakeTransport();
   const expansion = fakeExpansion();
 
-  await runBulkSweep(
-    { platform: "rednote", scope: "board:b", input: {}, expandNotes: true },
-    { transport, driver: driverOf([item("a")]), storage, expansion, ...engineOpts });
+  await runBulkSweep(RESUME_SPEC, {
+    transport, driver: driverOf([item("a")]), storage, expansion, ...engineOpts,
+  });
 
-  assert.equal(expansion.armings[0].armed, false);
+  assert.equal(expansion.armings.length, 1);
+  return expansion.armings[0];
+}
+
+test("runBulkSweep: a RESUMED expansion sweep arms the pre-check, up to its watermark", async () => {
+  const armed = await resumedArming({ mode: "expansion", sourceId: "note-7:2" });
+
+  assert.equal(armed.armed, true);
+  assert.equal(armed.resumeFrom, "note-7:2", "the boundary is the last COMMITTED item");
+});
+
+test("runBulkSweep: a checkpoint with NO mode arms nothing (an older build wrote it)", async () => {
+  // The same rule the clean marker has had since 098 R14: UNKNOWN is not "cover" and not
+  // "expansion". A checkpoint left by a build that predates the field says nothing about
+  // which pass walked the board, so the resume that reads it full-walks.
+  const armed = await resumedArming({ sourceId: "note-7:2" });
+
+  assert.equal(armed.armed, false);
+});
+
+test("runBulkSweep: a COVER-mode checkpoint does not arm an expansion resume", async () => {
+  // The mode trap, on the resume path. A cover-only sweep leaves every note known as
+  // `<note_id>` and expanded none of them; arming off its checkpoint would skip the first
+  // expansion sweep's every note-open and report "complete, 0 new".
+  const armed = await resumedArming({ mode: "cover", sourceId: "note-7" });
+
+  assert.equal(armed.armed, false);
+});
+
+test("runBulkSweep: the notes that OWE a failed item ride out as an exclusion", async () => {
+  // The other thing a resume must not skip, and the boundary does not cover it: a note in
+  // front of the halt point whose 9th image failed while its other 8 landed. The index
+  // calls it done and the resume would close `clean: true` over it, laundering the failure
+  // into the marker the next FRESH sweep arms off.
+  const armed = await resumedArming({
+    mode: "expansion", sourceId: "note-9:1", failed: ["note-1:8", "note-4", "note-1:2"],
+  });
+
+  assert.equal(armed.armed, true);
+  // sourceIds map to the NOTES that own them — a cover id and two children of one note.
+  assert.deepEqual([...new Set(armed.excluded)], ["note-1", "note-4"]);
+});
+
+test("runBulkSweep: a checkpoint that OVERFLOWED its failed set disarms the pre-check", async () => {
+  // Fail safe. The list is incomplete, and the id it could not keep is exactly the note
+  // that would be skipped still owing an image — so nothing here is trusted and the resume
+  // re-walks in full.
+  const armed = await resumedArming({
+    mode: "expansion", sourceId: "note-9:1", failed: ["note-1:8"], failedOverflow: true,
+  });
+
+  assert.equal(armed.armed, false);
+});
+
+test("runBulkSweep: a checkpoint with no failed set excludes nothing (an older build wrote it)", async () => {
+  const armed = await resumedArming({ mode: "expansion", sourceId: "note-9:1" });
+
+  assert.equal(armed.armed, true);
+  assert.deepEqual(armed.excluded, []);
+});
+
+test("runBulkSweep: every checkpoint records the MODE that wrote it", async () => {
+  // Which is what makes the two tests above answerable at all — and it has to be on the
+  // checkpoint rather than inferred from the clean marker, which a halt leaves speaking for
+  // some older completed run.
+  const { transport } = fakeTransport({ relayFor: () => ({ status: "unreachable" }) });
+  const storage = fakeStorage();
+
+  await runBulkSweep(RESUME_SPEC, {
+    transport, driver: driverOf([item("a")]), storage, expansion: fakeExpansion(), ...engineOpts,
+  });
+
+  const saves = storage.calls.save.filter((c) => c.key === RESUME_KEY);
+  assert.ok(saves.length > 0, "a resumable halt keeps its checkpoint");
+  assert.ok(saves.every((c) => c.value.mode === "expansion" && c.value.jobId === "JOB-9"));
+  assert.equal(saves.at(-1).value.sourceId, "a", "…and the item the watermark sits on");
 });
 
 test("runBulkSweep: Instagram's early-stop is untouched by a marker with no mode", async () => {

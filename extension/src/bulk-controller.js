@@ -30,7 +30,7 @@ import { createRednoteSource } from "./rednote-source.js";
 import { isNoteDetailRequest } from "./bulk-rednote.js";
 import {
   createNoteExpander, createPageFeedResetter, createPageNoteDriver, createPageStepScroller,
-  isRednoteChallenge,
+  isRednoteChallenge, noteOfSourceId,
 } from "./rednote-detail-client.js";
 import { readVideoCandidates } from "./rednote-video.js";
 import { browser } from "./browser.js";
@@ -73,6 +73,7 @@ export async function runBulkSweep(spec, {
   // saved cursor and force a full re-enumeration on resume. Keyed this way, a
   // killed run's cursor is exactly what the next run reads back.
   const checkpointKey = sweepCheckpointKey({ platform, scope, input });
+  const mode = sweepMode(spec);
 
   // Task 8 — RESUME THE SAME JOB. A resumable halt leaves the prior run's jobId in the
   // checkpoint; hand it to the app so it reopens THAT job instead of minting a new one
@@ -112,21 +113,80 @@ export async function runBulkSweep(spec, {
   // clean AND was at least as RICH as this one — `sweepMode` records which pass ran, because
   // a cover-only sweep leaves every note's `<note_id>` known and would otherwise skip every
   // note-open of the first expansion sweep. See `armsNotePreCheck`.
+  //
+  // A RESUME arms it too, and until changelog 509 it did not — `prior` truthy made
+  // `freshStart` false, the clean marker was never read, and the pre-check was off on the
+  // one run that most needs it: a resumed sweep re-walks the board from the top, so it
+  // meets every note the halted run already expanded before it reaches anything new. A
+  // live resume logged "prior sweep was absent" and re-opened 34 notes to ingest nothing,
+  // at ~3s of paced, signed, risk-controlled request each.
+  //
+  // What a resume may NOT trust is the index at the halt boundary. `knownNoteIndex` reads
+  // one landed child as a done note, so a note that landed 3 of its 9 images looks
+  // complete — and on a resume that is exactly what the note at the watermark may be. So
+  // the index is consulted only up to the note that owns the last COMMITTED item and
+  // disarmed from that note onward (`resumeFrom`). Everything at or after the boundary is
+  // re-opened, which also covers the engine's out-of-order tail: items beyond the
+  // watermark can have finished and registered their notes in the app's known-set while
+  // being incomplete, and they all lie after the boundary.
+  //
+  // IN FRONT of the boundary there is one other note that owes something: the one whose
+  // 9th image FAILED while its other 8 landed. It is in the app's known-set, the index
+  // calls it done, and it sits in territory the halted run genuinely finished — so the
+  // boundary does not cover it, and a fresh sweep's `clean` gate does not either, because
+  // the resume that skipped it fails nothing OF ITS OWN and closes `clean: true`. The
+  // stray failure would be laundered into the marker the next fresh sweep arms off, and
+  // the image lost for good. So the checkpoint's failed-item set names those notes and
+  // they are re-opened whatever the index says — at which point the failed item is
+  // re-attempted and either lands or fails again, and a run that fails it again records
+  // that failure itself and writes `clean: false`. The laundering closes without the
+  // clean-marker rule changing at all.
   if (expansion) {
-    const armed = priorClean && armsNotePreCheck(lastClean, sweepMode(spec));
-    expansion.arm({ knownSet, armed });
+    // The checkpoint carries the same `mode` the clean marker does, so the coverage rule is
+    // ONE rule, asked of whichever record speaks for the run before this one — and a
+    // checkpoint from a build that predates the field reads UNKNOWN and arms nothing,
+    // exactly as an older clean marker does. `clean` has no counterpart on a checkpoint and
+    // needs none: a halt is the unclean case, and the boundary is what contains it.
+    // A checkpoint that hit the failed-id cap says its list is INCOMPLETE, and an
+    // incomplete list is worth nothing here: the one id it dropped is the note that would
+    // be skipped still owing an image. So it disarms the whole pre-check for this resume —
+    // the full re-walk is the expensive answer and the only safe one. (The cap lives in
+    // config.js with the engine that enforces it; this side only reads the verdict.)
+    const failedSetLost = !freshStart && prior.failedOverflow === true;
+    const armed = freshStart
+      ? priorClean && armsNotePreCheck(lastClean, mode)
+      : !failedSetLost && armsNotePreCheck(prior, mode);
+    expansion.arm({
+      knownSet,
+      armed,
+      resumeFrom: freshStart ? null : prior.sourceId ?? null,
+      // sourceIds → the notes that own them, which is the unit the pre-check decides in.
+      // A checkpoint written before 509 has no `failed` at all and excludes nothing, which
+      // is what this run did before there was a set to read.
+      excluded: freshStart ? null : (prior.failed || []).map(noteOfSourceId).filter(Boolean),
+    });
     if (!armed) {
-      log("note-level pre-check disarmed — prior sweep was",
-        lastClean ? `${lastClean.mode || "an older build"} / clean=${lastClean.clean}` : "absent");
+      log("note-level pre-check disarmed —", freshStart
+        ? `prior sweep was ${lastClean
+          ? `${lastClean.mode || "an older build"} / clean=${lastClean.clean}` : "absent"}`
+        : failedSetLost
+          ? "this resume's checkpoint could not name everything that failed"
+          : `this resume's checkpoint was written by ${prior.mode || "an older build"}`);
     }
   }
 
   // Stamp the (possibly reopened) jobId into every checkpoint the engine writes, so a
   // later resume can reopen this same job. The engine stays jobId-agnostic — it just
-  // persists { cursor, counts } and this wrapper folds in the id.
+  // persists { cursor, sourceId, counts } and this wrapper folds in the id.
+  //
+  // The MODE rides along for the same reason it rides on the clean marker: the run that
+  // reads this checkpoint back has to know which PASS wrote it before it may trust
+  // anything the walk already covered. A cover-only sweep's checkpoint must no more arm an
+  // expansion resume's note pre-check than a cover-only clean marker may arm a fresh one's
+  // — the mode trap is the same trap on either record.
   const checkpointStorage = storage ? {
     load: (key) => storage.load(key),
-    save: (key, value) => storage.save(key, { ...value, jobId }),
+    save: (key, value) => storage.save(key, { ...value, jobId, mode }),
     remove: (key) => storage.remove(key),
   } : storage;
 
@@ -289,7 +349,7 @@ export async function runBulkSweep(spec, {
       // pre-check off the former skips every note-open there is. A marker from an older
       // build has no `mode` at all; that reads as UNKNOWN and arms nothing, while leaving
       // the `clean` rule Instagram's early-stop uses exactly as it was.
-      await storage.save(cleanMarkerKey, { clean, mode: sweepMode(spec) });
+      await storage.save(cleanMarkerKey, { clean, mode });
     } catch (error) {
       log("clean-marker write failed (non-fatal — next sweep just full-walks):", String(error));
     }

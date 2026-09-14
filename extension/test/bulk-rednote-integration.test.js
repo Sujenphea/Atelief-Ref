@@ -314,6 +314,11 @@ test("rednote integration: a 461 refusal mid-sweep HALTS resumable — the board
   assert.ok(saved, "checkpoint preserved — the sweep resumes, it is not lost");
   assert.equal(saved.cursor, null);
   assert.equal(saved.counts.ingested, idsOf(PAGE1).length);
+  // The `sourceId` is NOT nulled with the cursor, and on this platform it is the whole
+  // point of it (changelog 509): with no cursor to resume from, the last committed item is
+  // the only thing the checkpoint knows about how far the halted run actually got, and the
+  // resumed sweep's note pre-check is armed only as far as the note that owns it.
+  assert.equal(saved.sourceId, idsOf(PAGE1).at(-1));
 });
 
 test("rednote integration: a refusal PRE-EMPTS pages already queued behind it", async () => {
