@@ -161,8 +161,15 @@ export async function runBulkSweep(spec, {
     // fetch-error, unreachable, …) so a broken sweep explains itself without spamming a
     // line per item on a healthy one.
     if (!result || result.status !== "saved") {
+      // The SW returns WHY alongside the status (`message` on a fetch-error, `reason` on a
+      // skip or an empty plan) and this line used to drop both — so "fetch-error" reached
+      // the console as a bare label and a sweep that explained itself perfectly one process
+      // away looked mute. Same defect `terminalMessage` had for halts (392dc8d). Truncated
+      // because a message carries a url and this prints once per failed item.
+      const why = (result && (result.message || result.reason)) || "";
       log("relay", item.sourceId, "->", (result && result.status) || "no-result",
-        result && result.httpStatus != null ? "http" + result.httpStatus : "");
+        result && result.httpStatus != null ? "http" + result.httpStatus : "",
+        why ? String(why).slice(0, 200) : "");
     }
     return classifyIngestResult(result);
   };
