@@ -436,6 +436,17 @@ public final class CanvasHostView: NSView {
     /// Whether a tile is currently within the culled-visible set.
     public func isTileVisible(_ id: Int) -> Bool { engine.isVisible(tileID: id) }
 
+    /// Briefly wash `ids` as members of a frame (100 §5) — the app raises this after
+    /// ⌘G, for the tiles the new frame ADOPTED but the user never selected.
+    ///
+    /// Imperative and one-shot, so it comes through the host the app already holds
+    /// rather than through a `CanvasView` parameter: a closure or a piece of SwiftUI
+    /// state would make "show this now" into a value that view updates keep re-
+    /// asserting, and the whole point is that it happens once and expires. Empty is a
+    /// no-op all the way down, so the caller need not check.
+    /// See ``CanvasEngine/washMembership(_:for:)``.
+    public func washMembership(_ ids: Set<Int>) { engine.washMembership(ids) }
+
     /// The canvas's viewport in points — `.zero` until the first ``layout()``. The
     /// inline editor reads it to tell "not laid out yet" from "scrolled away".
     public var viewportSize: CGSize { engine.viewportSize }

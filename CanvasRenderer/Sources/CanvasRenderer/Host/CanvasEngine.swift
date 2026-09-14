@@ -154,13 +154,22 @@ public final class CanvasEngine {
     private var activeSnapGuides: [SnapGuide] = []
     /// The drawn guide lines, recycled across ticks (a resize churns these fast).
     private var guideLayers: [CALayer] = []
-    /// While a FRAME is being resized, the tiles that will belong to it on release
-    /// (062). Membership here is derived from containment, so a resize silently
-    /// changes it — showing the prospective set turns that invisible side effect
-    /// into something the user can aim.
+    /// The tiles currently washed as members. Two gestures write it and it holds ONE
+    /// set, because there is only one thing it can mean on screen: *these tiles belong
+    /// to that rect*. A resize keeps it live tick by tick (062 — membership is derived
+    /// from containment, so a resize silently changes it, and showing the prospective
+    /// set turns that invisible side effect into something the user can aim); ⌘G raises
+    /// it once, briefly, over the tiles its new frame adopted (100 §5).
+    ///
+    /// Sharing the field is what keeps the two drivers honest about precedence — see
+    /// ``washMembership(_:for:)`` for why the resize always wins.
     private var prospectiveMemberIDs: Set<Int> = []
     /// The wash drawn over each prospective member.
     private var membershipLayers: [Int: CALayer] = [:]
+    /// The pending self-clear of a ⌘G wash (100 · P3), or `nil` when no wash is timed.
+    /// Held so it can be CANCELLED: a wash that outlives its reason would clear a set
+    /// some later gesture had put there.
+    private var membershipWashExpiry: Task<Void, Never>?
 
     public init(
         provider: TileProvider,
@@ -669,6 +678,13 @@ public final class CanvasEngine {
     /// ``updateResize(toWorldPoint:)``.
     public func beginResize(tileID: Int, handle: ResizeHandle) {
         guard let tile = tile(withID: tileID) else { return }
+        // A ⌘G wash still up when a handle is grabbed is stale by definition: it names
+        // what some OTHER rect adopted, and the highlight is about to start naming what
+        // THIS one will. Retract it here rather than letting the first tick overwrite
+        // it, so the wash can never be read as a statement about the frame being
+        // dragged — and so its timer cannot fire mid-resize and clear the live preview
+        // out from under the gesture (100 · P3).
+        retractMembershipWash()
         resizeTileID = tileID
         activeResizeHandle = handle
         resizeOriginalFrame = tile.worldFrame
@@ -782,11 +798,93 @@ public final class CanvasEngine {
         onLiveFrameChanged?()
     }
 
+    // MARK: Membership wash (the second driver — 100 · P3)
+
+    /// How long a ⌘G wash stays up.
+    ///
+    /// The first duration this package has ever needed: everything else here is either
+    /// per-frame (the host's display link drives it) or bounded by a gesture the user
+    /// is holding, so there was no existing constant to reuse rather than invent.
+    ///
+    /// Chosen against the two failure modes, which pull in opposite directions. Too
+    /// short and it is missed: ⌘G puts a new frame on the board, the eye goes to the
+    /// frame, and an adopted tile is BY DEFINITION somewhere the user was not looking —
+    /// so the wash has to survive a saccade and a scan of the frame's interior, not
+    /// just a glance. Too long and it stops reading as a report and starts reading as a
+    /// mode, something the board is now in and that the user should perhaps dismiss;
+    /// past a couple of seconds a persistent fill on unselected tiles invites exactly
+    /// the wrong question ("are those selected?"), which is the confusion the fill-not-
+    /// border choice (062 §6) exists to avoid. 1.2s sits between the two: long enough
+    /// to be caught out of the corner of the eye and then actually looked at, short
+    /// enough that it is plainly over before the next gesture.
+    public static let membershipWashDuration: Duration = .milliseconds(1200)
+
+    /// Wash `ids` as members for `duration`, then clear. The second driver of the
+    /// highlight the resize preview already owns (100 §5): same set, same layer pool,
+    /// same fill — the drawing code does not know which gesture raised it.
+    ///
+    /// ⌘G creates a frame at the selection's bounding box, and a bounding box adopts
+    /// whatever else happens to sit between the tiles you picked (100 §3). This is how
+    /// the user is told. Only the ADOPTED tiles are passed, never the whole membership:
+    /// washing everything would say "here is what is in the frame", which is visible
+    /// from the frame itself, while washing the adopted ones says "here is what you did
+    /// not ask for" — the only new information the gesture produced.
+    ///
+    /// **An empty set is a total no-op** — no sync, no timer, and deliberately no clear
+    /// of a wash already up. It is the common case (the selection usually IS the
+    /// membership) and it must be silent: having nothing to report is not the same as
+    /// retracting an earlier report.
+    ///
+    /// **A live resize outranks it.** The two drivers share one field because the
+    /// highlight can only mean one thing at a time, so precedence has to be decided
+    /// rather than raced, and it goes to the resize in both directions: this refuses to
+    /// raise while a handle is being dragged (that preview is a promise about a rect
+    /// the user is actively aiming, and this one is a retrospective note about a rect
+    /// they already committed), and ``beginResize(tileID:handle:)`` retracts a standing
+    /// wash on the way in. Cancelling the expiry there is the load-bearing half: a
+    /// timer left running would fire mid-drag and blank a preview it knows nothing
+    /// about.
+    ///
+    /// Syncs immediately rather than waiting for the next frame. The adopted tiles
+    /// already exist — ⌘G creates only the frame — so there is nothing to wait for, and
+    /// the caller's own reload is an async round trip whose length would otherwise eat
+    /// an unpredictable slice of the duration.
+    public func washMembership(_ ids: Set<Int>, for duration: Duration = membershipWashDuration) {
+        guard !ids.isEmpty, resizeTileID == nil else { return }
+        membershipWashExpiry?.cancel()
+        prospectiveMemberIDs = ids
+        sync()
+        membershipWashExpiry = Task { [weak self] in
+            try? await Task.sleep(for: duration)
+            // Both checks matter. `Task.sleep` throws on a cancel that lands while it
+            // is suspended, but a cancel racing the wake-up leaves the body to run with
+            // the flag already set — and by then the field belongs to whoever cancelled
+            // us, so clearing it would be exactly the stomp this guards against.
+            guard !Task.isCancelled, let self else { return }
+            self.prospectiveMemberIDs = []
+            self.membershipWashExpiry = nil
+            self.sync()
+        }
+    }
+
+    /// Take the wash down NOW, because a gesture with a stronger claim on the highlight
+    /// is starting. Syncs only if something was actually drawn, so the common path
+    /// (grabbing a handle with no wash up) costs a set comparison and nothing else.
+    private func retractMembershipWash() {
+        membershipWashExpiry?.cancel()
+        membershipWashExpiry = nil
+        guard !prospectiveMemberIDs.isEmpty else { return }
+        prospectiveMemberIDs = []
+        sync()
+    }
+
     /// The snap guides currently shown — introspection for the tests.
     public var snapGuides: [SnapGuide] { activeSnapGuides }
 
-    /// The tiles a frame being resized will contain on release — introspection for
-    /// the tests, and the set the highlight is drawn from.
+    /// The tiles currently washed as members — introspection for the tests, and the
+    /// set the highlight is drawn from. What a resize will contain on release (062),
+    /// or what a ⌘G frame just adopted (100 §5); the field does not record which,
+    /// because the drawing does not distinguish them either.
     public var prospectiveMembers: Set<Int> { prospectiveMemberIDs }
 
     /// Whether handle dots are currently drawn — introspection for the tests.

@@ -998,12 +998,39 @@ struct SpaceView: View {
     /// keystroke would simply vanish into a new frame. Withdrawing the binding rather
     /// than unmounting the carrier keeps the bar from reflowing mid-edit.
     @ViewBuilder private var groupInFrameShortcut: some View {
-        Button("Group in Frame") { space.groupSelectionInFrame() }
+        Button("Group in Frame") { groupInFrame() }
             .keyboardShortcut(
                 editingTileID != nil ? nil : KeyboardShortcut("g", modifiers: .command))
             .frame(width: 0, height: 0)
             .opacity(0)
             .accessibilityHidden(true)
+    }
+
+    /// Run ⌘G, then show what it took in that the user did not ask for (100 · P3).
+    ///
+    /// The frame is drawn at the selection's bounding box, honestly — and a bounding
+    /// box adopts any tile that happened to sit between the ones you picked, because
+    /// membership here is derived from containment rather than stored (100 §3). The
+    /// alternative was shrinking the rect to exclude strays, which can fail outright
+    /// and would make ⌘G quietly mean something other than "a frame around this". So
+    /// the geometry stays honest and the *adoption* is what gets reported.
+    ///
+    /// Only the adopted set is washed, never the whole membership: the user can see
+    /// what is inside a frame they are looking at; what they cannot see is which of it
+    /// arrived uninvited (100 §5). An empty set — the selection already being the
+    /// membership, which is the usual case — flashes nothing, and the `guard` is there
+    /// to say so rather than because the host would misbehave (it no-ops on empty too).
+    ///
+    /// The ids survive the round trip. `groupSelectionInFrame()` computes them from the
+    /// live content and the write is an async `enqueue`, so the wash is raised well
+    /// before the new frame lands — but the adopted tiles are not created by this
+    /// operation, they are tiles that already existed, and `SpaceContent.reconcile`
+    /// keeps a surviving row's tile id across a reload precisely so the renderer's
+    /// state outlives a write. Nothing the enqueue does can renumber them.
+    private func groupInFrame() {
+        let adopted = space.groupSelectionInFrame()
+        guard !adopted.isEmpty else { return }
+        chromeAnchor.host?.washMembership(adopted)
     }
 
     // MARK: - External import (drop + paste)
