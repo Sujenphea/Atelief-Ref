@@ -27,64 +27,135 @@ import { tweet, photo, conversation } from "./fixtures/x-conversation.js";
 /** The live capture. Sanitized: identities, ids, urls and post text are synthetic; keys,
  * nesting and every reply relationship are exactly as X served them. */
 const live = JSON.parse(readFileSync(new URL("./fixtures/x-thread-detail.json", import.meta.url)));
-/** The head of the author's thread in that capture. */
-const LIVE_HEAD = "1900000000000040001";
-const LIVE_SPINE = [
-  "1900000000000040001", "1900000000000041001", "1900000000000042001",
-  "1900000000000043001", "1900000000000044001",
-];
+/** The author's screen name, read the way the walk reads it. */
+const screenNameOf = (t) => t?.core?.user_results?.result?.core?.screen_name
+  || t?.core?.user_results?.result?.legacy?.screen_name || null;
+
+/** The thread in that capture, DERIVED and not pinned: the longest self-chain in the body,
+ * which is what `checkThread` does when no focal tweet is named and what the app does when
+ * a bookmark lands mid-thread.
+ *
+ * This file used to open with a hardcoded head id and a five-id spine, both copied out of a
+ * hand-written fixture. Re-capturing the conversation (498) invalidated every one of them
+ * and six tests went red without a single rule having changed — which is the tell that the
+ * constants were pinning THE FIXTURE rather than the walk. Nothing below names an id, a
+ * handle, a tweet count or a chain length; each test states the relationship it cares
+ * about and lets the capture supply the numbers. */
+const LIVE_TWEETS = collectConversationTweets(live);
+const LIVE_CHAIN = LIVE_TWEETS.reduce((longest, t) => {
+  const walked = selfThreadChain(live, t.rest_id);
+  return walked.length > longest.length ? walked : longest;
+}, []);
+const LIVE_SPINE = LIVE_CHAIN.map((t) => t.rest_id);
+const LIVE_HEAD = LIVE_SPINE[0];
+const LIVE_AUTHOR = screenNameOf(LIVE_CHAIN[0]);
 
 // MARK: - against the LIVE capture (the shapes X actually serves)
 
 test("live: the conversation walk finds every tweet, across both entry shapes", () => {
-  const tweets = collectConversationTweets(live);
+  // The expected SET is derived from the body by a dumb recursive scan for
+  // `tweet_results.result`, independent of the walk under test — so this compares two
+  // readings of the same capture instead of comparing the walk to a number somebody typed.
+  const scanned = new Set();
+  (function scan(node) {
+    if (Array.isArray(node)) return node.forEach(scan);
+    if (!node || typeof node !== "object") return;
+    const result = node.tweet_results && node.tweet_results.result;
+    if (result && result.rest_id) scanned.add(result.rest_id);
+    Object.values(node).forEach(scan);
+  })(live);
+
+  assert.ok(scanned.size > 1, "the capture has a conversation in it at all");
+  assert.deepEqual(new Set(LIVE_TWEETS.map((t) => t.rest_id)), scanned);
+  assert.equal(LIVE_TWEETS.length, scanned.size, "no tweet counted twice");
+
   // The focal tweet arrives as a bare TimelineTimelineItem and the continuations inside a
-  // conversationthread MODULE; a generic walk is what survives either moving alone.
-  assert.equal(tweets.length, 29);
-  assert.equal(new Set(tweets.map((t) => t.rest_id)).size, 29, "no tweet counted twice");
+  // conversationthread MODULE; a generic walk is what survives either moving alone. Both
+  // shapes must actually be PRESENT here, or this capture is not exercising the claim.
+  const bare = new Set();
+  const inModule = new Set();
+  for (const instruction of live.data.threaded_conversation_with_injections_v2.instructions) {
+    for (const entry of instruction.entries || []) {
+      const content = entry.content || {};
+      const direct = content.itemContent?.tweet_results?.result;
+      if (direct?.rest_id) bare.add(direct.rest_id);
+      for (const item of content.items || []) {
+        const nested = item.item?.itemContent?.tweet_results?.result;
+        if (nested?.rest_id) inModule.add(nested.rest_id);
+      }
+    }
+  }
+  assert.ok(bare.size > 0, "no tweet arrived as a bare entry");
+  assert.ok(inModule.size > 0, "no tweet arrived inside a module");
+  assert.deepEqual(new Set([...bare, ...inModule]), scanned);
 });
 
 test("live: from the HEAD, the chain is the author's own thread and stops there", () => {
+  assert.ok(LIVE_SPINE.length >= 2, "the capture contains a threaded conversation");
   assert.deepEqual(selfThreadChain(live, LIVE_HEAD).map((t) => t.rest_id), LIVE_SPINE);
+  // "The author's own, and stops there": one author across the chain, each link replying
+  // to the one before it, and the head replying to nothing in the chain.
+  assert.deepEqual([...new Set(LIVE_CHAIN.map(screenNameOf))], [LIVE_AUTHOR]);
+  assert.deepEqual(LIVE_CHAIN.slice(1).map((t) => t.legacy.in_reply_to_status_id_str),
+    LIVE_SPINE.slice(0, -1));
+  assert.equal(LIVE_SPINE.includes(LIVE_CHAIN[0].legacy.in_reply_to_status_id_str), false);
+  // Nothing else in the conversation continues it: no tweet outside the chain replies to
+  // its LAST link, which is what "stops there" means.
+  const tail = LIVE_SPINE[LIVE_SPINE.length - 1];
+  const continuations = LIVE_TWEETS.filter((t) => t.legacy?.in_reply_to_status_id_str === tail
+    && screenNameOf(t) === LIVE_AUTHOR);
+  assert.deepEqual(continuations, []);
 });
 
 test("live: from a MID-thread tweet, the chain walks up to the head and back down", () => {
-  // Bookmarking part 3 must still save all five, in reading order — the case the whole
-  // feature exists for.
-  assert.deepEqual(selfThreadChain(live, LIVE_SPINE[2]).map((t) => t.rest_id), LIVE_SPINE);
+  // Bookmarking any link must still save the whole thread, in reading order — the case the
+  // whole feature exists for. Asserted from EVERY link rather than from a chosen one, so it
+  // holds however long the next capture's thread turns out to be.
+  for (const id of LIVE_SPINE) {
+    assert.deepEqual(selfThreadChain(live, id).map((t) => t.rest_id), LIVE_SPINE,
+      `walking from ${id} did not recover the whole thread`);
+  }
 });
 
-test("live: the author's 12 replies TO COMMENTERS stay out of the thread", () => {
-  // The trap that an author+conversation filter would fall into, now proven on real data:
-  // this capture has twelve tweets by the thread's author that are NOT part of it.
+test("live: the author's replies TO COMMENTERS stay out of the thread", () => {
+  // The trap that a plain author+conversation filter would fall into, proven on real data:
+  // this capture has tweets by the thread's own author that are NOT part of the thread.
   const chain = selfThreadChain(live, LIVE_HEAD);
-  const screenNameOf = (t) => t?.core?.user_results?.result?.core?.screen_name || null;
-  const author = screenNameOf(chain[0]);
-  const allByAuthor = collectConversationTweets(live).filter((t) => screenNameOf(t) === author);
-
-  assert.equal(author, "threadauthor");
-  assert.equal(allByAuthor.length, 17, "the author appears 17 times in this conversation");
-  assert.equal(chain.length, 5, "only five of them are the thread");
-  // Each excluded one replies to somebody else's tweet — that is what disqualifies it.
+  const allByAuthor = LIVE_TWEETS.filter((t) => screenNameOf(t) === LIVE_AUTHOR);
   const inChain = new Set(chain.map((t) => t.rest_id));
-  const chainIds = new Set(LIVE_SPINE);
-  for (const t of allByAuthor.filter((x) => !inChain.has(x.rest_id))) {
-    assert.equal(chainIds.has(t.legacy.in_reply_to_status_id_str), false,
+  const excluded = allByAuthor.filter((t) => !inChain.has(t.rest_id));
+
+  assert.ok(LIVE_AUTHOR, "the chain's author is readable");
+  // The filter has to be DOING something here, or the test passes on a capture that could
+  // never have caught the bug. That is the load-bearing claim, not the count itself.
+  assert.ok(excluded.length > 0,
+    "this capture has no author-replies-to-commenters, so it cannot prove they are excluded");
+  assert.equal(chain.length, allByAuthor.length - excluded.length);
+  // Each excluded one replies to somebody else's tweet — that is what disqualifies it.
+  const spine = new Set(LIVE_SPINE);
+  for (const t of excluded) {
+    assert.equal(spine.has(t.legacy.in_reply_to_status_id_str), false,
       `${t.rest_id} replies into the thread's spine and should not have been dropped`);
   }
 });
 
 test("live: the thread maps to ONE post — shared permalink, contiguous open order", () => {
+  assert.ok(LIVE_SPINE.length >= 2, "a one-tweet 'thread' groups trivially and proves nothing");
   const items = mapThread(selfThreadChain(live, LIVE_HEAD), { host: "x.com" });
-  // The head carries 4 photos, the four continuations one each.
-  assert.equal(items.length, 8);
+  assert.ok(items.length >= LIVE_SPINE.length, "every tweet in the thread produced an item");
   assert.deepEqual([...new Set(items.map((i) => i.provenance.originalURL))],
-    [`https://x.com/threadauthor/status/${LIVE_HEAD}`]);
-  assert.deepEqual(items.map((i) => i.provenance.rawMetadata.carouselIndex), [0, 1, 2, 3, 4, 5, 6, 7]);
-  assert.deepEqual(items.map((i) => i.provenance.rawMetadata.threadIndex), [0, 0, 0, 0, 1, 2, 3, 4]);
+    [`https://x.com/${LIVE_AUTHOR}/status/${LIVE_HEAD}`]);
+  // Contiguous from zero, however many media the thread turns out to carry.
+  assert.deepEqual(items.map((i) => i.provenance.rawMetadata.carouselIndex),
+    items.map((_, index) => index));
+  // threadIndex is the POSITION IN THE CHAIN, so it is non-decreasing, starts at 0, ends at
+  // the last link, and every link appears — a tweet's several media share one index.
+  const threadIndices = items.map((i) => i.provenance.rawMetadata.threadIndex);
+  assert.deepEqual([...threadIndices].sort((a, b) => a - b), threadIndices);
+  assert.deepEqual([...new Set(threadIndices)], LIVE_SPINE.map((_, index) => index));
   for (const item of items) assert.equal(item.provenance.rawMetadata.threadId, LIVE_HEAD);
   // Per-media dedup keys must stay distinct or the engine skips siblings as already-seen.
-  assert.equal(new Set(items.map((i) => i.sourceId)).size, 8);
+  assert.equal(new Set(items.map((i) => i.sourceId)).size, items.length);
   // These items ARE the expansion; a surviving hint would re-expand them every sweep.
   for (const item of items) assert.equal("threadHint" in item, false);
 });
@@ -95,40 +166,67 @@ test("live: each tweet stays a TWEET, and the thread still forms one carousel", 
   // group as a single post.
   const items = mapThread(selfThreadChain(live, LIVE_HEAD), { host: "x.com" });
 
-  // One descriptor per TWEET — five, not eight. A tweet capture dedups on
-  // `(kind, tweetID)`, so two items claiming one tweet id would collapse and the
-  // second's photo would be deleted as an orphan blob.
+  // ONE descriptor per TWEET, not per item. A tweet capture dedups on `(kind, tweetID)`,
+  // so two items claiming one tweet id would collapse and the second's photo would be
+  // deleted as an orphan blob.
   const described = items.filter((item) => item.content);
   assert.deepEqual(described.map((item) => item.content.payload.tweet.tweetID), LIVE_SPINE);
-  assert.equal(new Set(described.map((i) => i.content.payload.tweet.tweetID)).size, 5,
-    "every descriptor claims a DIFFERENT tweet id");
+  assert.equal(new Set(described.map((i) => i.content.payload.tweet.tweetID)).size,
+    LIVE_SPINE.length, "every descriptor claims a DIFFERENT tweet id");
 
-  // Each descriptor carries that tweet's own words, not the head's.
+  // Each descriptor carries that tweet's own words, not the head's. The TEXTS themselves
+  // are synthetic — the sweep replaces every one — so what is asserted is that they are
+  // distinct and that each descriptor's text is the text of the tweet it names, read
+  // straight off the chain.
   const texts = described.map((item) => item.content.payload.tweet.text);
-  assert.equal(new Set(texts).size, 5, "each tweet keeps its own text");
-  assert.match(texts[0], /thread part 1/);
-  assert.match(texts[4], /thread part 5/);
+  assert.equal(new Set(texts).size, LIVE_SPINE.length, "each tweet keeps its own text");
+  // Long-form body first, `legacy.full_text` only as the fallback — a >280-char tweet's
+  // `full_text` is TRUNCATED, so reading it would silently cut three of this thread's four
+  // tweets short. Three of them carry a `note_tweet` whose text differs from their
+  // `full_text`, so the precedence is genuinely exercised here and not merely restated.
+  const longForm = (t) => t?.note_tweet?.note_tweet_results?.result?.text || null;
+  assert.deepEqual(texts, LIVE_CHAIN.map((t) => longForm(t) || t.legacy.full_text));
+  assert.ok(LIVE_CHAIN.some((t) => longForm(t) && longForm(t) !== t.legacy.full_text),
+    "no tweet in this chain has a long-form body, so the fallback order is untested");
 
-  // The head's four photos: one descriptor listing all four, three plain images.
-  assert.equal(items[0].content.payload.tweet.media.length, 4);
-  assert.deepEqual(items.slice(1, 4).map((i) => i.content), [undefined, undefined, undefined]);
+  // Each tweet's descriptor lists that tweet's WHOLE media run, and the rest of its items
+  // stay plain images. This is the head-carries-four-photos claim stated per tweet, so it
+  // survives a capture whose thread is shaped differently.
+  const byThreadIndex = new Map();
+  for (const item of items) {
+    const index = item.provenance.rawMetadata.threadIndex;
+    if (!byThreadIndex.has(index)) byThreadIndex.set(index, []);
+    byThreadIndex.get(index).push(item);
+  }
+  for (const [index, group] of byThreadIndex) {
+    assert.ok(group[0].content, `tweet ${index} has no descriptor on its first item`);
+    assert.deepEqual(group.slice(1).map((i) => i.content),
+      group.slice(1).map(() => undefined), `tweet ${index} describes more than its first item`);
+    assert.equal(group[0].content.payload.tweet.media.length,
+      group.filter((i) => i.mediaUrl).length, `tweet ${index} lists the wrong media count`);
+  }
 
-  // …and every one of the eight still groups as ONE post, under the thread's permalink,
-  // regardless of what ingest does to each tweet's originalURL for identity.
+  // …and every item still groups as ONE post, under the thread's permalink, regardless of
+  // what ingest does to each tweet's originalURL for identity.
   const groupKeys = new Set(items.map((i) => i.provenance.rawMetadata.postGroupKey));
-  assert.deepEqual([...groupKeys], [`https://x.com/threadauthor/status/${LIVE_HEAD}`]);
-  assert.equal(items.length, 8);
+  assert.deepEqual([...groupKeys], [`https://x.com/${LIVE_AUTHOR}/status/${LIVE_HEAD}`]);
 });
 
 test("live: a swept tweet from this thread is recognised as worth expanding", () => {
-  const tweets = collectConversationTweets(live);
-  const part2 = tweets.find((t) => t.rest_id === LIVE_SPINE[1]);
-  const head = tweets.find((t) => t.rest_id === LIVE_HEAD);
+  const part2 = LIVE_TWEETS.find((t) => t.rest_id === LIVE_SPINE[1]);
+  const head = LIVE_TWEETS.find((t) => t.rest_id === LIVE_HEAD);
   assert.equal(needsThreadExpansion(part2), true, "a reply is mid-thread by construction");
   // The head names no parent, so it is only reachable by probing — which is why
   // probeRoots is on in production.
   assert.equal(needsThreadExpansion(head), false);
-  assert.equal(needsThreadExpansion(head, { probeRoots: true }), true);
+  // …and probing cannot fire on THIS body, which is a fact about the fixture rather than
+  // about the rule: `probeRoots` reads `legacy.reply_count`, and the sanitizer zeroes every
+  // `*_count` by key on the way in, deliberately (engagement numbers are not ours to
+  // ship). So a live capture can never answer the probeRoots half, and pinning `false`
+  // here says so out loud instead of leaving a silent gap — the rule itself is covered on
+  // synthetic bodies below, where a reply_count can be set to 3 and to 0.
+  assert.equal(head.legacy.reply_count, 0, "the sweep zeroed the count probeRoots reads");
+  assert.equal(needsThreadExpansion(head, { probeRoots: true }), false);
 });
 
 // MARK: - against synthetic bodies (the shapes a capture won't contain)

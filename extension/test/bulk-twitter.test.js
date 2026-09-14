@@ -46,6 +46,31 @@ const entries = findInstructions(bookmarks)
   .map((e) => e.content.itemContent.tweet_results.result);
 const [videoTweet, photoTweet, textTweet] = entries;
 
+/** A tweet's media keys, in its own order, read OFF the fixture. Retyped as literals these
+ * were the account holder's real X media ids — the fixture was composed from a live
+ * timeline before the sanitizer existed and carried eight of them verbatim until 498. What
+ * the tests below care about is that a `sourceId` IS the media's key (per-asset, so the
+ * engine's skip set cannot collide two photos of one tweet), which this states directly. */
+const mediaKeysOf = (tweet) => (tweet.legacy.extended_entities?.media
+  || tweet.legacy.entities?.media || []).map((media) => media.media_key);
+/** The tweet a tweet quotes, or null — the borrowed media's home. */
+const quotedOf = (tweet) => tweet.quoted_status_result?.result
+  || tweet.legacy?.quoted_status_result?.result || null;
+
+test("fixture: every media key still has X's <media_type>_<media_id> shape", () => {
+  // The one thing the tests below CANNOT catch, because they read the keys off the fixture
+  // and would happily compare two flattened values. X's media key is a composite, and its
+  // leading run is the photo/video discriminator (`3_` photo, `13_` video) that 498's
+  // sanitizer rule keeps verbatim while replacing the id beside it. Five changelogs in a
+  // week were this sweep flattening a shape a mapper is defined against; a sixth would
+  // land right here and otherwise go unnoticed.
+  const keys = entries.flatMap((t) => [...mediaKeysOf(t), ...mediaKeysOf(quotedOf(t) || { legacy: {} })]);
+  assert.ok(keys.length >= 8, "the fixture still carries its media");
+  for (const key of keys) assert.match(key, /^\d{1,5}_\d{6,}$/);
+  assert.ok(new Set(keys.map((k) => k.split("_")[0])).size > 1,
+    "the fixture no longer shows more than one media TYPE, so the prefix proves nothing");
+});
+
 // MARK: - isTimelineRequest
 
 test("isTimelineRequest: matches Bookmarks/BookmarkFolderTimeline/Likes ops, rejects others", () => {
@@ -146,7 +171,9 @@ test("mapTweet: a video tweet → one item keyed by the MEDIA, poster + best MP4
   const item = items[0];
   // The MEDIA's key, not the tweet's (310): one tweet can now yield several items,
   // and the engine's skip key ([P14]) has to be per-asset or they'd collide.
-  assert.equal(item.sourceId, "REDACTED");
+  assert.deepEqual(mediaKeysOf(videoTweet).length, 1, "the fixture's video tweet has one media");
+  assert.equal(item.sourceId, mediaKeysOf(videoTweet)[0]);
+  assert.notEqual(item.sourceId, item.provenance.rawMetadata.tweetId, "keyed by the MEDIA");
   assert.equal(item.provenance.rawMetadata.tweetId, "1000000000000000034");
   assert.equal(item.mediaUrl, "https://pbs.twimg.com/media/SAMPLE24.jpg?name=orig"); // the poster
   assert.equal(item.mediaUrlFallback, "https://pbs.twimg.com/media/SAMPLE24.jpg");
@@ -172,9 +199,8 @@ test("mapTweet: a multi-photo tweet → ONE ITEM PER PHOTO, all sharing the perm
   // This fixture tweet ALSO quotes a 3-photo tweet, so the merge rule appends those
   // three after its own; the first three are what the tweet itself carries.
   assert.equal(items.length, 6);
-  assert.deepEqual(items.slice(0, 3).map((i) => i.sourceId), [
-    "REDACTED", "REDACTED", "REDACTED",
-  ]);
+  assert.equal(mediaKeysOf(photoTweet).length, 3, "the fixture's photo tweet has three media");
+  assert.deepEqual(items.slice(0, 3).map((i) => i.sourceId), mediaKeysOf(photoTweet));
   for (const [index, item] of items.entries()) {
     assert.match(item.mediaUrl, /\?name=orig$/);                 // each at original resolution
     assert.equal(item.provenance.rawMetadata.kind, "photo");
@@ -245,7 +271,8 @@ test("mapTweet: a BARE quote of a video captures the QUOTED video (own media emp
   const item = items[0];
   // The quoted media's key, NAMESPACED by the quoting tweet so it can't collide with
   // a direct save of the tweet it was borrowed from.
-  assert.equal(item.sourceId, "1000000000000000212:REDACTED");
+  assert.equal(mediaKeysOf(textTweet).length, 0, "the quoting tweet carries no media of its own");
+  assert.equal(item.sourceId, `1000000000000000212:${mediaKeysOf(quotedOf(textTweet))[0]}`);
   assert.equal(item.provenance.rawMetadata.tweetId, "1000000000000000212"); // the quote's own id
   assert.equal(item.provenance.rawMetadata.kind, "video");
   assert.match(item.mediaUrl, /SAMPLE203\.jpg\?name=orig$/);     // the quoted video's poster
@@ -435,13 +462,12 @@ test("parseTimelinePage: yields one item per MEDIA, keyed by the media key", () 
   // it quotes + the bare quote's borrowed video (1). Every quoted media is merged in
   // — not only a bare quote's — and each borrowed key is namespaced by its quoter.
   assert.deepEqual(items.map((i) => i.sourceId), [
-    "REDACTED",
-    "REDACTED", "REDACTED", "REDACTED",
-    "1000000000000000171:REDACTED",
-    "1000000000000000171:REDACTED",
-    "1000000000000000171:REDACTED",
-    "1000000000000000212:REDACTED",
+    ...mediaKeysOf(videoTweet),
+    ...mediaKeysOf(photoTweet),
+    ...mediaKeysOf(quotedOf(photoTweet)).map((key) => `1000000000000000171:${key}`),
+    ...mediaKeysOf(quotedOf(textTweet)).map((key) => `1000000000000000212:${key}`),
   ]);
+  assert.equal(items.length, 8, "1 video + 3 photos + 3 borrowed photos + 1 borrowed video");
   // The photo tweet's six (its own three plus the three it quotes) share one
   // permalink, so the app collapses them to a single tile.
   const byPermalink = new Map();

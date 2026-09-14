@@ -65,6 +65,16 @@ test("pickPinImages: no usable image → nulls", () => {
 
 test("mapPinterestPin: maps the fixture pin to a complete BulkItem", () => {
   const item = mapPinterestPin(firstPin, { host: HOST, cursor: "CUR0" });
+  // The fields below are read off the fixture rather than retyped, so guard that the
+  // fixture still HAS them — otherwise a pin that lost its pinner would make the author
+  // assertions compare null to null and pass.
+  assert.ok(firstPin.seo_url && firstPin.pinner.username && firstPin.pinner.full_name);
+  // …and that the fixture's `seo_url` still LOOKS like one. The sanitizer used to flatten
+  // it to `/sampleuserN/sampleN/`, which no assertion here could have noticed because they
+  // all read the value back off the fixture — while `pinIdFrom`'s documented fallback
+  // (`/\/pin\/(\d+)/`) quietly stopped being exercised by any committed capture.
+  assert.match(firstPin.seo_url, /^\/pin\/\d+\/$/);
+  assert.equal(pinIdFrom({ seo_url: firstPin.seo_url }), firstPin.seo_url.split("/")[2]);
   assert.equal(item.sourceId, "1000000000000000239");
   assert.equal(item.mediaUrl, "https://i.pinimg.com/originals/00/00/00/SAMPLE235.jpg");
   assert.equal(item.mediaUrlFallback, "https://i.pinimg.com/736x/00/00/00/SAMPLE234.jpg");
@@ -75,11 +85,14 @@ test("mapPinterestPin: maps the fixture pin to a complete BulkItem", () => {
     // provenance host folds to www so a capture of this pin from another region, or
     // by the DOM extractor, composes the SAME string. The API requests below still
     // use the live host.
-    originalURL: "https://www.pinterest.comREDACTED",
+    // Composed from the pin's OWN `seo_url`, not from a url typed here — the pin id in it
+    // was the account holder's real pin until 498 redacted it, and pinning the literal is
+    // what made that redaction a test failure instead of a no-op.
+    originalURL: `https://www.pinterest.com${firstPin.seo_url}`,
     mediaUrl: "https://i.pinimg.com/originals/00/00/00/SAMPLE235.jpg",
     mediaUrlFallback: "https://i.pinimg.com/736x/00/00/00/SAMPLE234.jpg",
-    authorHandle: "sampleuser",
-    authorName: "sujen",
+    authorHandle: firstPin.pinner.username,
+    authorName: firstPin.pinner.full_name,
     title: "Sample text",
     rawMetadata: { pinId: "1000000000000000239", isVideo: false, link: "https://example.com/asset/240" },
   });
