@@ -133,12 +133,45 @@ export function terminalMessage(result) {
     return shortfall ? `Done, partly expanded — ${n} ingested (${shortfall}).` : `Done — ${n} ingested.`;
   }
   if (result && result.haltStatus === "halted") return `Stopped — ${n} ingested.`;
-  const why = haltReason(result);
-  return why ? `Paused (resumable) — ${n} ingested. ${why}` : `Paused (resumable) — ${n} ingested.`;
+  const line = `Paused (resumable) — ${n} ingested.`;
+  // 508: an app Pause is the one halt that arrives here with nothing to say. `haltReason`
+  // reads `result.error` and there IS no error — the app flipped the job to `paused` under
+  // a healthy sweep and the engine stopped on its next relay, exactly as designed. A live
+  // re-sweep halted that way at 2 ingested / 82 skipped and the only way to learn why was
+  // to read the engine's source. 507's heartbeat removed the common CAUSE of that pause; a
+  // Pause pressed in the Sweeps tab still lands here identically, so the outcome needs a
+  // sentence rather than a silence. An explicit reason is the more specific fact and still
+  // wins — this is only the fallback `haltReason` leaves.
+  const why = haltReason(result)
+    || ((result && result.haltStatus === "paused") ? APP_PAUSE_MESSAGE : null);
+  return why ? `${line} ${why}` : line;
 }
 
+/** What an app-paused sweep says in place of a halt reason (508).
+ *
+ * It does NOT name WHICH pause. A user pressing Pause in the Sweeps tab and
+ * `IngestionModel.pauseStaleOpenJobs` (90s) both reach the engine as `jobStatus: "paused"`
+ * via `classifyIngestResult`, and nothing on the wire tells them apart — so the copy states
+ * the fact the extension actually holds and stops there.
+ *
+ * It ends in something the user can DO, for the reason spelled out over
+ * `RednoteFeedStartError`: this is the one line a human reads about a finished sweep, and a
+ * halt that explains itself without an exit is still a mystery.
+ *
+ * The action is Start HERE, not Resume in the app — `IngestionModel.resumeSweep` only writes
+ * `status`, so nothing continues from it, while `JobRoutes.openOrReopen` reopens a `paused`
+ * job from the checkpoint's `resumeJobId` on its own. Naming the button would have sent the
+ * user through a click that does nothing before the one that works.
+ *
+ * Exported rather than inlined so the popup and its test share ONE copy; a second could only
+ * ever drift from this one. */
+export const APP_PAUSE_MESSAGE =
+  "The app paused this sweep — nothing here failed. Start the sweep again: it continues the "
+  + "same job and re-skips everything already imported.";
+
 /** WHY a sweep halted, as the sentence to show the user — or null when it halted without
- * an enumeration error (an app Pause, a media auth wall).
+ * an enumeration error (a media auth wall; an app Pause, which `terminalMessage` answers
+ * with `APP_PAUSE_MESSAGE` rather than leaving bare — 508).
  *
  * This is the only place a runtime halt's reason reaches a human. `REASON_MESSAGE` cannot
  * serve it: that table answers `resolveSweepSpec`, which refuses BEFORE a sweep starts and

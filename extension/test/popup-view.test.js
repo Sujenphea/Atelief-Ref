@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 
 import {
   sweepLabel, sweepWarning, startEnabled, terminalMessage, launchOutcome,
-  expansionOption, expansionShortfall, haltReason,
+  expansionOption, expansionShortfall, haltReason, APP_PAUSE_MESSAGE,
 } from "../src/popup-view.js";
 import { RednoteFeedStartError, RednoteStallError } from "../src/rednote-source.js";
 import { NOTE_OPEN_BUDGET } from "../src/config.js";
@@ -79,10 +79,47 @@ test("terminalMessage: an explicit Cancel → Stopped", () => {
 test("terminalMessage: a resumable halt (pause / wall) → Paused", () => {
   assert.equal(
     terminalMessage({ status: "halted", haltStatus: "paused", counts: { ingested: 7 } }),
-    "Paused (resumable) — 7 ingested.");
+    `Paused (resumable) — 7 ingested. ${APP_PAUSE_MESSAGE}`);
+  // A self-halt carries no app intent, so it gets the bare line — there is no pause to
+  // attribute and claiming one would be a lie about who stopped the sweep.
   assert.equal(
     terminalMessage({ status: "halted", haltStatus: null, counts: { ingested: 0 } }),
     "Paused (resumable) — 0 ingested.");
+});
+
+test("terminalMessage: an APP pause says who paused it and how to pick it up again", () => {
+  // The halt this was live-observed on (508): counts fine, nothing failed, no error string
+  // at all — the app had flipped the job to `paused` underneath a healthy sweep, and the
+  // only way to learn that was to read the engine's source.
+  const paused = terminalMessage({
+    status: "halted", haltStatus: "paused", counts: { ingested: 2 }, error: null,
+  });
+  assert.match(paused, /^Paused \(resumable\) — 2 ingested\./, "the outcome line still leads");
+  assert.ok(paused.endsWith(APP_PAUSE_MESSAGE), "the pause reached the user unexplained");
+
+  // The copy's two load-bearing properties, asserted on the constant itself so rewording it
+  // stays free and hollowing it out does not.
+  assert.match(APP_PAUSE_MESSAGE, /\bapp\b/i, "it must name WHO paused the sweep");
+  // The action is Start, not the app's Resume button: `resumeSweep` only writes `status`, and
+  // `openOrReopen` reopens the paused job from the checkpoint anyway.
+  assert.match(APP_PAUSE_MESSAGE, /start the sweep again/i,
+    "a halt with no action in it is still a mystery (see RednoteFeedStartError)");
+  // It must NOT guess which pause: a Pause in the Sweeps tab and the app's staleness
+  // reconciler arrive identically, and the extension cannot tell them apart.
+  assert.equal(/\bstale|\btimed out|\byou paused|\bidle\b/i.test(APP_PAUSE_MESSAGE), false,
+    "the extension cannot know which pause this was, so it must not claim one");
+});
+
+test("terminalMessage: an explicit reason outranks the app-pause line", () => {
+  // Both facts are true of this result; the error is the more specific one, and appending
+  // both would make the user read a generic pause line to reach the refusal that matters.
+  const refused = terminalMessage({
+    status: "halted", haltStatus: "paused", counts: { ingested: 0 },
+    error: String(new RednoteFeedStartError()),
+  });
+  assert.match(refused, /reload the board page/i);
+  assert.equal(refused.includes(APP_PAUSE_MESSAGE), false,
+    "the specific refusal was buried under the generic pause line");
 });
 
 test("terminalMessage: a resumable halt SAYS WHY, so a refusal is actionable and not a mystery", () => {
@@ -111,12 +148,13 @@ test("terminalMessage: a resumable halt SAYS WHY, so a refusal is actionable and
 });
 
 test("terminalMessage: a halt with nothing to explain reads exactly as it always did", () => {
-  // An app Pause and a media auth wall carry no enumeration error; appending an empty
+  // A media auth wall carries no enumeration error and no app intent; appending an empty
   // reason (or the word "null") would be worse than saying nothing.
   assert.equal(
-    terminalMessage({ status: "halted", haltStatus: "paused", counts: { ingested: 7 }, error: null }),
+    terminalMessage({ status: "halted", haltStatus: null, counts: { ingested: 7 }, error: null }),
     "Paused (resumable) — 7 ingested.");
-  // A Cancel is terminal, not a wall — its line is about the user's own decision.
+  // A Cancel is terminal, not a wall — its line is about the user's own decision, so it is
+  // untouched by 508 even though the app set that status too.
   const cancelled = terminalMessage({
     status: "halted", haltStatus: "halted", counts: { ingested: 3 },
     error: String(new RednoteFeedStartError()),
