@@ -461,6 +461,90 @@ acknowledgement on the video checkbox too. `refused` and `streamRefused` are
 counted apart and neither is `partial`: a sweep that read the ladder did what it
 set out to do.
 
+## The first live run (2026-09-14) — what running it actually found
+
+Everything above T7 was verified against captures and tests. Then the extension
+was loaded and pointed at a real board. **Five defects surfaced that no fixture
+could have shown**, and one load-bearing claim in this plan turned out false.
+
+### L1 — the sweep captured 78 of 116 notes and reported `complete`
+The worst kind: a wrong answer wearing a success. Cursor evidence from the page's
+own responses, across two passes:
+
+| page | notes | next cursor |
+| --- | --- | --- |
+| A | 38 | `6a804923…` |
+| B | 37 | `6a650248…` |
+| C | 38 | `6a616185…` |
+| D | 3 | `""` (end) |
+
+The sweep saw B, C, D only. **116 − 78 = 38, exactly one page.** The board feed is
+cursor-FORWARD and the driver's only lever is `scrollTo(bottom)`, which can never
+re-request an earlier page — so a sweep started on an already-scrolled board can
+only capture from where the page happens to be. The replay buffer is not the
+constraint (25 entries, 8 MB).
+
+**Fixed in two parts, deliberately.** `392dc8d` makes the sweep **refuse** unless
+it holds the feed's first page (`isFirstBoardFeedRequest`, halting resumable).
+That is a guard, not a fix — it converts silent loss into a loud refusal. `d927083`
+is the fix: the sweep **resets the feed in-page** by clicking the board's own
+`/user/profile/<id>` anchor and going back, which was verified live to re-request
+with `cursor=""`. A reload was rejected — it tears down the content script the
+sweep runs in. The guard stays as the assertion that the reset worked.
+
+Two subtleties the reset had to get right, both found by mutation: the back leg
+fires **only after the click is confirmed to have routed** (otherwise `history.back()`
+pops the board itself off the stack), and responses arriving before the decision
+are **held, not forwarded** — without that, a board scrolled to its bottom replays
+the exhausted tail page, which queues ahead of the refetched page A and ends
+enumeration before page A is yielded. That is L1 rebuilt out of its own repair.
+
+### L2 — K3b expansion cannot reach most notes on a real board
+**The grid is virtualised: 13 cards mounted, against 37–38 notes per feed page.**
+`findLink` can only click a card that is in the DOM, and expansion runs over a
+whole page *after* it arrives, by which time most of those cards have unmounted.
+So expansion succeeds for the handful on screen and degrades the rest.
+
+020's risk list named "Virtualised grid" and the driver never accounted for it.
+**This plan's T5/T6 entries claimed expansion shipped; they did not say it cannot
+reach most of a board.** `33632bd` makes the shortfall visible — `unreachable`
+(could not reach the note) is counted apart from `degraded` (reached it, no
+answer), and the terminal line now reads `expanded 13 of 116; 103 had no card on
+the page to open`. **That is honesty, not a fix.** The fix is **2A** — interleaving
+expansion with the scroll so notes open while their cards are mounted — and it is
+**outstanding work, not shipped.**
+
+### L3 — the note-open clicked a link that 404s
+The board renders **two anchors per note** and the tokenless one comes first in
+document order, so `querySelector` took the one without `xsec_token` — which
+rednote answers with a 404. Fixed in `295c5a1` by preferring the tokenised anchor.
+The same commit found a third route shape (`/discovery/item/<id>`, alongside
+`/explore/<id>` and the board's `/board/<board>/<note>`) and a `closeNote` history
+fallback that tested for `/explore/` and therefore **could never have fired on a
+live board**.
+
+### L4 — every resumable halt rendered the same sentence
+`terminalMessage` was discarding `result.error` outright, so the stall, the 461 and
+the new refusal were indistinguishable in the popup. Found while wiring L1's
+refusal (`392dc8d`). It is why the first live stall said so little.
+
+### L5 — a selector-injection test that could never fail
+The fake window's selector parser returned `[]` for anything it did not recognise,
+and a guard breakout produces a **valid** selector, not a malformed one. Found by
+mutating the id guard and watching nothing fail (`295c5a1`).
+
+### Decided, and deliberately not built
+**3B — the expansion batching stays.** `items = await expandItems(items)` blocks a
+whole page, so nothing is ingested for 2–5 minutes with expansion on. It is latency,
+not loss, and whatever 2A does will restructure how `expandItems` is driven — fixing
+it first risks doing the same work twice in a file all four platforms share.
+
+### What the live run confirmed
+The cover pass captures a real board end to end; a re-sweep deduped all 78 against
+a live job ledger (`ingested: 0, skipped: 78`); the parser handled pages of 37, 38
+and 3 despite the request asking `num=30`; and the board URL recogniser accepted
+the real URL, query string and all — closing **Open question 1**.
+
 ### Unverified without a live run
 - **`createPageNoteDriver`** infers the board card's link shape and the overlay's
   close affordance; neither was captured, and it now drives video notes too. A
@@ -476,12 +560,21 @@ set out to do.
   re-open is exercised by tests alone.
 - `master_url` was fetched live from a browser (206, `video/mp4`), **not** from
   the service worker's cookie-less cross-origin fetch.
-- The **board URL path shape** (`/board/<24-hex>`) is still inferred — Open
-  question 1. A wrong shape makes the popup refuse every board.
+- **The reset, end to end.** The in-page refetch was reproduced by hand in the
+  console on ONE board in ONE SPA build; the sweep driving it and capturing all
+  116 has not been run. Every divergence lands in the guard, which is safe and is
+  also how we would find out.
+- `FEED_RESET_SETTLE_MS = 1200` and `FEED_RESET_GRACE_MS = 1500` are **reasoned,
+  not measured**. Too short shows up as a log line and degrades into the guard,
+  never as a wrong capture.
+- The **13 mounted cards** is one probe at one scroll offset — "a fraction of a
+  page", not a constant.
 
 ## Open questions
 
-1. **Board URL path shape** — never recorded; needed for the recogniser.
+1. ~~**Board URL path shape**~~ **Answered 2026-09-14** — `/board/<24-hex>`, with
+   a `?source=…` query the recogniser ignores. Confirmed against the user's real
+   board URL, which is the same board the captures came from.
 2. ~~**`sourceId` scheme across cover → expanded**~~ **Settled and shipped** —
    keys unchanged; an expanded-children-only `knownNoteIndex`, gated on a
    mode-aware clean marker. See the T5 addendum. The `cover == image_list[0]`
