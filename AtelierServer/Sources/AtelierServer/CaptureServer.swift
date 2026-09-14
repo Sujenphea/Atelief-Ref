@@ -273,9 +273,9 @@ struct CaptureHTTPHandler: HTTPHandler {
     }
 
     /// Dispatch a `/jobs…` request (015 · 3A). Parses the parametrized paths
-    /// (`/jobs`, `/jobs/{id}/known-sources`, `/jobs/{id}/complete`) and hands off
-    /// to the pure `JobRoutes`. Every unmatched shape (or a build without bulk
-    /// import) is a 404. Job bodies are tiny JSON, so they are buffered whole.
+    /// (`/jobs`, `/jobs/{id}/known-sources`, `/jobs/{id}/complete`, `/jobs/{id}/progress`)
+    /// and hands off to the pure `JobRoutes`. Every unmatched shape (or a build without
+    /// bulk import) is a 404. Job bodies are tiny JSON, so they are buffered whole.
     private func handleJobRequest(
         _ request: HTTPRequest, cors: [String: String]
     ) async -> HTTPResponse {
@@ -290,7 +290,7 @@ struct CaptureHTTPHandler: HTTPHandler {
             return makeResponse(statusCode(result.statusCode), cors: cors, job: result.response)
         }
 
-        // /jobs/{id}/known-sources | /jobs/{id}/complete
+        // /jobs/{id}/known-sources | /jobs/{id}/complete | /jobs/{id}/progress
         let segments = path.split(separator: "/").map(String.init)
         if segments.count == 3, segments[0] == "jobs",
            let jobID = UUID(uuidString: segments[1]) {
@@ -301,6 +301,11 @@ struct CaptureHTTPHandler: HTTPHandler {
             if request.method == .POST, segments[2] == "complete" {
                 let body = (try? await request.bodyData) ?? Data()
                 let result = await jobRoutes.handleComplete(jobID: jobID, body: body)
+                return makeResponse(statusCode(result.statusCode), cors: cors, job: result.response)
+            }
+            if request.method == .POST, segments[2] == "progress" {
+                let body = (try? await request.bodyData) ?? Data()
+                let result = await jobRoutes.handleProgress(jobID: jobID, body: body)
                 return makeResponse(statusCode(result.statusCode), cors: cors, job: result.response)
             }
         }

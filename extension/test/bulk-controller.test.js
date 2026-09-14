@@ -12,6 +12,7 @@ import {
   runBulkSweep, sweepCheckpointKey, sweepCleanMarkerKey, sweepMode, armsNotePreCheck,
 } from "../src/bulk-controller.js";
 import { BULK } from "../src/bulk-messages.js";
+import { SWEEP_HEARTBEAT_MS } from "../src/config.js";
 import { videoCandidates, withVideoCandidates } from "../src/rednote-video.js";
 
 function item(sourceId, videoUrl = null) {
@@ -29,8 +30,13 @@ function driverOf(items) {
 }
 
 /** A transport that records messages and answers per type; `relayFor` maps a
- * sourceId → the ingestOne result the SW would return. */
-function fakeTransport({ known = [], relayFor = () => ({ status: "saved", deduplicated: false }) } = {}) {
+ * sourceId → the ingestOne result the SW would return. `progressFor` lets a test make
+ * the heartbeat fail (it answers with the job's status in production). */
+function fakeTransport({
+  known = [],
+  relayFor = () => ({ status: "saved", deduplicated: false }),
+  progressFor = () => "open",
+} = {}) {
   const messages = [];
   const transport = async (message) => {
     messages.push(message);
@@ -38,11 +44,37 @@ function fakeTransport({ known = [], relayFor = () => ({ status: "saved", dedupl
       case BULK.open: return { jobId: "JOB-9", caps: { maxBodyBytes: 1, maxVideoBodyBytes: 2 } };
       case BULK.known: return known;
       case BULK.relay: return relayFor(message.sourceId, message);
+      case BULK.progress: return progressFor(message);
       case BULK.complete: return true;
       default: throw new Error(`unexpected ${message.type}`);
     }
   };
   return { transport, messages };
+}
+
+/** A fake `setTimer`/`clearTimer` pair: nothing is scheduled, the callback is held so a
+ * test fires it exactly when it wants to. No wall-clock anywhere, like `sleep`/`random`. */
+function fakeTimers() {
+  const started = [];
+  const cleared = [];
+  return {
+    started, cleared,
+    setTimer: (fn, ms) => { started.push({ fn, ms }); return `timer-${started.length}`; },
+    clearTimer: (id) => { cleared.push(id); },
+    /** Fire every timer ever started, awaiting each — including ones since cleared, which
+     * is the point: a real interval's callback can already be queued when it is cancelled. */
+    async tick() { for (const t of started) await t.fn(); },
+  };
+}
+
+/** A driver that fires the heartbeat once before yielding each item, so the ping lands
+ * DURING the sweep (when a real interval would fire) rather than after it settled. */
+function driverTicking(items, timers) {
+  return {
+    enumerate: () => (async function* () {
+      for (const it of items) { await timers.tick(); yield it; }
+    })(),
+  };
 }
 
 const engineOpts = {
@@ -389,6 +421,147 @@ test("runBulkSweep: a checkpoint-cleanup (remove) failure LOGS but does not mask
   assert.ok(logs.some((l) => /cleanup failed/.test(l)), "the failure is logged, not swallowed silently");
 });
 
+// MARK: - the progress heartbeat (changelog 507)
+//
+// The app pauses any `open` job idle for 90s, and the only thing that bumped `updated_at`
+// was a RELAYED item — so a sweep in a long dedup/note-open stretch was paused underneath
+// itself and halted on the resulting `jobStatus: "paused"`. These pin the timer's contract:
+// it starts after the job opens, carries the live skipped count, is always cancelled, and
+// can never take the sweep down with it.
+
+test("runBulkSweep: starts the heartbeat AFTER the job opens, at the configured interval", async () => {
+  const timers = fakeTimers();
+  const { transport, messages } = fakeTransport();
+
+  await runBulkSweep(
+    { platform: "pinterest", input: {} },
+    { transport, driver: driverOf([item("a")]), ...engineOpts, ...timers });
+
+  assert.equal(timers.started.length, 1, "exactly one heartbeat per sweep");
+  assert.equal(timers.started[0].ms, SWEEP_HEARTBEAT_MS, "the config constant, not a local copy");
+  // A ping needs the jobId, so it cannot precede the open — and the app would 404 it.
+  const firstPing = messages.findIndex((m) => m.type === BULK.progress);
+  assert.ok(firstPing > messages.findIndex((m) => m.type === BULK.open));
+  assert.equal(messages[firstPing].jobId, "JOB-9");
+});
+
+test("runBulkSweep: a tick mid-sweep pings with the LIVE skipped count", async () => {
+  const timers = fakeTimers();
+  const { transport, messages } = fakeTransport({ known: ["a", "b"] });
+  // a and b are already known → skipped without any relay: the exact stretch that used to
+  // pass 90s in silence. c is fresh.
+  const driver = driverTicking([item("a"), item("b"), item("c")], timers);
+
+  const result = await runBulkSweep(
+    { platform: "pinterest", input: {} }, { transport, driver, ...engineOpts, ...timers });
+
+  assert.equal(result.counts.skipped, 2);
+  const skips = messages.filter((m) => m.type === BULK.progress).map((m) => m.skipped);
+  // One tick before each of the three items (0, 1, 2 skips so far), then the closing ping.
+  assert.deepEqual(skips, [0, 1, 2, 2]);
+});
+
+test("runBulkSweep: pings once more before the close, so a short sweep's count still lands", async () => {
+  const timers = fakeTimers();
+  const { transport, messages } = fakeTransport({ known: ["a"] });
+
+  await runBulkSweep(
+    { platform: "pinterest", input: {} },
+    { transport, driver: driverOf([item("a")]), ...engineOpts, ...timers });
+
+  // The timer never fired — a sweep finishing inside 30s never would — so without the
+  // closing ping the ledger would keep 0 and the row would read "0 skipped" for ever.
+  const pings = messages.filter((m) => m.type === BULK.progress);
+  assert.deepEqual(pings.map((m) => m.skipped), [1]);
+  // …and it lands BEFORE the close, not after a job the app has already terminated.
+  assert.ok(messages.indexOf(pings[0]) < messages.findIndex((m) => m.type === BULK.complete));
+});
+
+test("runBulkSweep: a FAILING ping logs and the sweep still completes", async () => {
+  const timers = fakeTimers();
+  const logs = [];
+  const { transport } = fakeTransport({
+    progressFor: () => { throw new Error("progress failed (HTTP 500)"); },
+  });
+  const driver = driverTicking([item("a"), item("b")], timers);
+
+  const result = await runBulkSweep(
+    { platform: "pinterest", input: {} },
+    { transport, driver, log: (...a) => logs.push(a.join(" ")), ...engineOpts, ...timers });
+
+  // A lost heartbeat's worst case is the bug this fixes (the job goes stale and is
+  // paused); losing the whole sweep to it would be strictly worse.
+  assert.equal(result.status, "complete");
+  assert.equal(result.counts.ingested, 2);
+  assert.ok(logs.some((l) => /progress ping failed/.test(l)), "logged, not swallowed");
+});
+
+test("runBulkSweep: the heartbeat is cancelled on a clean close, a halt, and a THROW", async () => {
+  // Clean close.
+  const clean = fakeTimers();
+  const { transport } = fakeTransport();
+  await runBulkSweep(
+    { platform: "pinterest", input: {} },
+    { transport, driver: driverOf([item("a")]), ...engineOpts, ...clean });
+  assert.deepEqual(clean.cleared, clean.started.map((_, i) => `timer-${i + 1}`));
+
+  // Halt (the app cancelled mid-sweep).
+  const halted = fakeTimers();
+  const { transport: haltTransport } = fakeTransport({
+    relayFor: () => ({ status: "saved", deduplicated: false, jobStatus: "halted" }),
+  });
+  await runBulkSweep(
+    { platform: "pinterest", input: {} },
+    { transport: haltTransport, driver: driverOf([item("a"), item("b")]), ...engineOpts, ...halted });
+  assert.deepEqual(halted.cleared, ["timer-1"]);
+
+  // A throw out of the engine — an interval nobody cancels outlives the sweep and keeps
+  // pinging a job that is closed, which is why the stop lives in a `finally`.
+  const thrown = fakeTimers();
+  const { transport: throwTransport } = fakeTransport();
+  await assert.rejects(() => runBulkSweep(
+    { platform: "pinterest", input: {} },
+    {
+      transport: throwTransport,
+      driver: { enumerate: () => { throw new Error("driver exploded"); } },
+      ...engineOpts, ...thrown,
+    }), /driver exploded/);
+  assert.deepEqual(thrown.cleared, ["timer-1"]);
+});
+
+test("runBulkSweep: a tick that lands AFTER the sweep settled sends nothing", async () => {
+  // A real interval's callback can already be queued when `clearInterval` runs, so the
+  // stop is a flag as well as a cancel — otherwise a ping arrives after the close and
+  // touches a job the sweep no longer owns.
+  const timers = fakeTimers();
+  const { transport, messages } = fakeTransport();
+
+  await runBulkSweep(
+    { platform: "pinterest", input: {} },
+    { transport, driver: driverOf([item("a")]), ...engineOpts, ...timers });
+
+  const before = messages.filter((m) => m.type === BULK.progress).length;
+  await timers.tick();
+  assert.equal(messages.filter((m) => m.type === BULK.progress).length, before);
+});
+
+test("runBulkSweep: the heartbeat does not displace the caller's onProgress", async () => {
+  // The ping reads the same counts snapshot `onProgress` is handed, and wrapping it must
+  // not cost the caller its own callback.
+  const timers = fakeTimers();
+  const { transport } = fakeTransport();
+  const seen = [];
+
+  await runBulkSweep(
+    { platform: "pinterest", input: {} },
+    {
+      transport, driver: driverOf([item("a"), item("b")]),
+      onProgress: (counts) => seen.push(counts.ingested), ...engineOpts, ...timers,
+    });
+
+  assert.deepEqual(seen, [1, 2]);
+});
+
 // MARK: - re-sweep early-stop arming (14A)
 
 test("sweepCleanMarkerKey: points at the same target as the checkpoint, with a :lastclean suffix", () => {
@@ -473,6 +646,7 @@ test("runBulkSweep: a failing job-close (complete) PROPAGATES — the ledger clo
       case BULK.open: return { jobId: "J", caps: null };
       case BULK.known: return [];
       case BULK.relay: return { status: "saved", deduplicated: false };
+      case BULK.progress: return "open";
       case BULK.complete: throw new Error("complete failed (HTTP 500)");
       default: throw new Error(`unexpected ${message.type}`);
     }

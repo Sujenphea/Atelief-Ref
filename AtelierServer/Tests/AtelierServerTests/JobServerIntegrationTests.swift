@@ -168,6 +168,59 @@ struct JobServerIntegrationTests {
         #expect(try await running.env.services.getJob(id: jobID).status == .complete)
     }
 
+    @Test("POST /jobs/{id}/progress keeps a relay-free sweep off the staleness reconciler")
+    func progressKeepsAnOpenSweepAlive() async throws {
+        let running = try await start(); defer { Task { await running.server.stop() } }
+        let jobID = try await createJob(running)
+        let opened = try await running.env.services.getJob(id: jobID).updatedAt
+
+        let (data, response) = try await URLSession.shared.data(
+            for: request(running, method: "POST", path: "/jobs/\(jobID)/progress",
+                         body: try! JSONEncoder().encode(JobProgressRequest(skipped: 82))))
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        let decoded = try JSONDecoder().decode(JobResponse.self, from: data)
+        #expect(decoded.status == "progress")
+        #expect(decoded.jobStatus == "open")
+
+        // The two things the Sweeps tab reads off this row: the count it cannot derive
+        // (a dedup skip never reaches /ingest), and a fresh `updated_at` so the 90s
+        // reconciler leaves a live-but-quiet sweep alone.
+        let job = try await running.env.services.getJob(id: jobID)
+        #expect(job.skippedCount == 82)
+        #expect(job.updatedAt > opened)
+        #expect(job.status == .open)
+    }
+
+    @Test("a ping cannot reopen a job the user paused mid-sweep")
+    func progressNeverResurrects() async throws {
+        let running = try await start(); defer { Task { await running.server.stop() } }
+        let jobID = try await createJob(running)
+        try await running.env.services.setJobStatus(jobID: jobID, to: .paused)
+
+        let (data, response) = try await URLSession.shared.data(
+            for: request(running, method: "POST", path: "/jobs/\(jobID)/progress",
+                         body: try! JSONEncoder().encode(JobProgressRequest(skipped: 5))))
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        // The sweep learns of the pause from the reply rather than undoing it.
+        let decoded = try JSONDecoder().decode(JobResponse.self, from: data)
+        #expect(decoded.jobStatus == "paused")
+        #expect(try await running.env.services.getJob(id: jobID).status == .paused)
+    }
+
+    @Test("progress for an absent job → 404, and the route is token-gated like the rest")
+    func progressAbsentAndGated() async throws {
+        let running = try await start(); defer { Task { await running.server.stop() } }
+        let (_, absent) = try await URLSession.shared.data(
+            for: request(running, method: "POST", path: "/jobs/\(UUID())/progress", body: Data()))
+        #expect((absent as? HTTPURLResponse)?.statusCode == 404)
+
+        let jobID = try await createJob(running)
+        let (_, untokened) = try await URLSession.shared.data(
+            for: request(running, method: "POST", path: "/jobs/\(jobID)/progress",
+                         token: nil, body: Data()))
+        #expect((untokened as? HTTPURLResponse)?.statusCode == 403)
+    }
+
     @Test("known-sources for an absent job → 404")
     func knownSourcesAbsent() async throws {
         let running = try await start(); defer { Task { await running.server.stop() } }

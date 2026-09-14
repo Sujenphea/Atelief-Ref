@@ -1,11 +1,12 @@
 // Atelier Capture — the loopback /jobs contract (bulk import, decision 3A).
 //
 // The SW-side wrappers for the job-ledger handshake the app exposes: open a sweep,
-// load its known-source skip set (P14), close it. Mirrors Swift's `JobResponse`
-// DTO (JobDTO.swift) — a rename on either side breaks a test here or a route test
-// there. Pure request-building + a thin fetch wrapper (fetchImpl injectable). Only
-// the SW calls these (a content script can't reach 127.0.0.1 without CORS); the
-// content-script controller reaches them by messaging the SW.
+// load its known-source skip set (P14), report that it is still alive, close it.
+// Mirrors Swift's `JobResponse` DTO (JobDTO.swift) — a rename on either side breaks a
+// test here or a route test there. Pure request-building + a thin fetch wrapper
+// (fetchImpl injectable). Only the SW calls these (a content script can't reach
+// 127.0.0.1 without CORS); the content-script controller reaches them by messaging
+// the SW.
 
 import { TOKEN_HEADER, parseJsonResponse } from "./endpoint.js";
 import { fetchWithTimeout } from "./net.js";
@@ -63,6 +64,21 @@ export async function fetchKnownSources(jobId, { token, fetchImpl, storage } = {
     throw new Error(body.error || `known-sources failed (HTTP ${status})`);
   }
   return body.sourceIds;
+}
+
+/** `POST /jobs/{id}/progress` — one heartbeat from a running sweep: it is alive, and
+ * it has skipped `skipped` already-known items so far. Returns the job's CURRENT status
+ * (`open` | `paused` | `halted` | `complete`), which the app never changes on a ping —
+ * a sweep that has not noticed a pause yet must not undo it by breathing.
+ *
+ * The count is the one progress number the app cannot work out for itself: a dedup skip
+ * never reaches `/ingest`, so it leaves no `job_item` behind to count. */
+export async function reportJobProgress(jobId, skipped, { token, fetchImpl, storage } = {}) {
+  const { status: httpStatus, body } = await jobFetch(
+    `/jobs/${encodeURIComponent(jobId)}/progress`,
+    { method: "POST", payload: { skipped }, token, fetchImpl, storage });
+  if (httpStatus !== 200) throw new Error(body.error || `progress failed (HTTP ${httpStatus})`);
+  return body.jobStatus || null;
 }
 
 /** `POST /jobs/{id}/complete` — close/transition a sweep. `status` ∈ complete |

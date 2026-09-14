@@ -17,6 +17,9 @@ function deps(over = {}) {
     openJob: async (spec, opts) => { calls.open = { spec, opts }; return { jobId: "J", caps: null }; },
     fetchKnownSources: async (id, opts) => { calls.known = { id, opts }; return ["s1"]; },
     ingestOne: async (prov, opts) => { calls.relay = { prov, opts }; return { status: "saved", deduplicated: false }; },
+    reportJobProgress: async (id, skipped, opts) => {
+      calls.progress = { id, skipped, opts }; return "open";
+    },
     completeJob: async (id, status, opts) => { calls.complete = { id, status, opts }; return true; },
     calls,
     ...over,
@@ -165,6 +168,22 @@ test("relay: a rednote stream item with no still still reaches ingestOne", async
     videoCandidates: ["http://sns-v11.rednotecdn.com/stream/1/110/258/a_258.mp4"],
   }, d);
   assert.deepEqual(result, { status: "saved", deduplicated: false });
+});
+
+test("progress: forwards the jobId + skipped count + token, and returns the job status", async () => {
+  const d = deps();
+  assert.equal(await handleBulkMessage({ type: BULK.progress, jobId: "J", skipped: 82 }, d), "open");
+  assert.equal(d.calls.progress.id, "J");
+  assert.equal(d.calls.progress.skipped, 82);
+  assert.equal(d.calls.progress.opts.token, "TOK");
+});
+
+test("progress: a missing count is 0, not undefined (the ping still has to go)", async () => {
+  // The heartbeat's job is to say the sweep is alive; a sweep that has skipped nothing yet
+  // must still reach the app, or the 90s reconciler pauses it out from under itself.
+  const d = deps();
+  await handleBulkMessage({ type: BULK.progress, jobId: "J" }, d);
+  assert.equal(d.calls.progress.skipped, 0);
 });
 
 test("complete: forwards the status (defaults to complete)", async () => {

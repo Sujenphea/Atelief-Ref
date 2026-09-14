@@ -78,6 +78,48 @@ extension AppServices {
         }
     }
 
+    /// Record a running sweep's periodic HEARTBEAT: raise its skipped tally and, while
+    /// it is still `open`, stamp `updated_at` so ``pauseStaleOpenJobs(olderThan:now:)``
+    /// can see it is alive. Returns the job's status as it stands. `.notFound` if the
+    /// job is absent. One write transaction — the two facts are one ping (G9).
+    ///
+    /// **Why a sweep needs a heartbeat at all.** `updated_at` had exactly one writer,
+    /// ``recordJobItem``, which fires only when an item is RELAYED. A live sweep goes
+    /// minutes without relaying anything — a dedup skip takes no relay and no pacing,
+    /// and rednote's note-open pass spends seconds per note to find only already-known
+    /// items — so the 90s staleness reconciler paused jobs underneath running sweeps.
+    /// The sweep then read `jobStatus: "paused"` off its next relay and halted itself,
+    /// two items into a board, reporting no error because from its side nothing failed.
+    ///
+    /// **Why `MAX`, not an assignment.** A resumed sweep REOPENS the same job id, and
+    /// the engine's counts restart at 0 for that run while it re-skips the same known
+    /// items on its way back to where it stopped. Assigning would therefore walk the
+    /// number backwards on every resume and then climb again; `MAX` is monotonic across
+    /// any number of resumes and cannot regress. It also makes the ping idempotent, so
+    /// a retried or out-of-order ping is harmless.
+    ///
+    /// **A ping is progress, not a transition.** Nothing here writes `status`: a ping
+    /// against a `paused`, `halted` or `complete` job can never reopen it — a sweep that
+    /// has not yet noticed it was paused must not undo the pause by breathing. Such a
+    /// ping still raises the count (the work it reports genuinely happened) but leaves
+    /// `updated_at` alone, so it cannot make a finished sweep look freshly active. The
+    /// returned status is how the caller learns which case it was.
+    @discardableResult
+    public func recordJobProgress(
+        jobID: UUID, skipped: Int, now: Date = Date()
+    ) async throws -> JobStatus {
+        try await write { db in
+            let job = try Self.require(Job.self, db: db, key: jobID)
+            try db.execute(sql: """
+                UPDATE job
+                   SET skipped_count = MAX(skipped_count, ?),
+                       updated_at = CASE WHEN status = ? THEN ? ELSE updated_at END
+                 WHERE id = ?
+                """, arguments: [skipped, JobStatus.open.rawValue, now, Self.key(jobID)])
+            return job.status
+        }
+    }
+
     /// The set of platform source ids already ingested for this job's platform,
     /// across ALL jobs (P14 download-skip). A source is "known" (its bytes are in
     /// the store, so the extension must NOT re-download it) only when some

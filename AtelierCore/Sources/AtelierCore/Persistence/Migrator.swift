@@ -37,7 +37,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23", "v24"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23", "v24", "v25"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -216,6 +216,13 @@ enum Migrator {
         // released: never edit this body.
         migrator.registerMigration("v24") { db in
             try createV24Schema(db)
+        }
+
+        // v25 — `job.skipped_count`, the one progress number `job_item` cannot hold.
+        // Additive with a 0 default: every existing sweep reads exactly as it did.
+        // SHIPPED once released: never edit this body.
+        migrator.registerMigration("v25") { db in
+            try createV25Schema(db)
         }
 
         return migrator
@@ -1352,6 +1359,34 @@ enum Migrator {
     private static func createV24Schema(_ db: Database) throws {
         try db.execute(sql: """
             ALTER TABLE job ADD COLUMN cleared_at TEXT;
+            """)
+    }
+
+    // MARK: - v25
+
+    /// `job.skipped_count` — how many items the running sweep skipped as already
+    /// known (P14), reported by the extension's periodic progress ping.
+    ///
+    /// **The one progress number that cannot be a `job_item` row.** Every other tally
+    /// the Sweeps tab shows is a `GROUP BY` over `job_item`, which works because every
+    /// other outcome passes through `/ingest` and gets recorded there. A dedup skip
+    /// does not: the extension holds the known-source set in memory and drops the item
+    /// before any relay — that is the whole point of P14, not re-DOWNLOADING what is
+    /// already here. So there is nothing to count, and the tab's "Skipped" stat read
+    /// `job_item`'s `skipped` tally, a status no code path writes. A re-sweep of a
+    /// 116-note board that skipped 82 of them reported 0.
+    ///
+    /// A COUNTER rather than rows, deliberately: a row per skip would re-create the
+    /// download-and-record cost the skip exists to avoid, and the skipped source ids
+    /// are already in the ledger — they are what made the item known in the first place.
+    ///
+    /// `NOT NULL DEFAULT 0` so the column needs no backfill and no nil handling: a sweep
+    /// that predates the ping, or one whose browser never sent one, reads 0, which is
+    /// exactly what the tab showed before this existed. Raised with `MAX`, never
+    /// assigned — see ``AppServices/recordJobProgress(jobID:skipped:now:)`` for why.
+    private static func createV25Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            ALTER TABLE job ADD COLUMN skipped_count INTEGER NOT NULL DEFAULT 0;
             """)
     }
 }

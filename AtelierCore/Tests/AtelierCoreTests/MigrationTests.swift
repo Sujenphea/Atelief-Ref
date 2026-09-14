@@ -88,7 +88,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23", "v24"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23", "v24", "v25"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -3227,6 +3227,87 @@ struct MigrationV24Tests {
                 db, sql: "SELECT source_id FROM job_item WHERE job_id = ?",
                 arguments: [jobID])
             #expect(sources == ["pin-1"])
+        }
+    }
+}
+
+// MARK: - v25 (the skip count `job_item` cannot hold)
+
+/// v25 adds the one progress number that is NOT derivable from `job_item`: a dedup skip
+/// never reaches `/ingest`, so it leaves no row. These pin what an upgrade must do to a
+/// sweep that predates the ping — read exactly as it did — and that the column is a
+/// counter with a real default rather than a nullable the callers have to defend against.
+@Suite("Migration v25 — job.skipped_count")
+struct MigrationV25Tests {
+
+    private static let base = "2026-01-01 00:00:00.000"
+
+    private func seedJob(_ db: Database) throws -> String {
+        let jobID = UUID().uuidString
+        try db.execute(sql: """
+            INSERT INTO job (id, platform, status, ingested_count, created_at, updated_at)
+            VALUES (?, 'rednote', 'complete', 34, ?, ?);
+            """, arguments: [jobID, Self.base, Self.base])
+        try db.execute(sql: """
+            INSERT INTO job_item (job_id, source_id, status, blob_hash, updated_at)
+            VALUES (?, 'note-1', 'ingested', 'hash', ?);
+            """, arguments: [jobID, Self.base])
+        return jobID
+    }
+
+    @Test("an existing sweep upgrades to skipped_count 0 — the number it already showed")
+    func existingJobsReadZero() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v24")
+        let jobID = try dbQueue.write { db in try seedJob(db) }
+
+        try Migrator.makeMigrator().migrate(dbQueue)   // apply v25
+
+        try dbQueue.read { db in
+            let skipped = try Int.fetchOne(
+                db, sql: "SELECT skipped_count FROM job WHERE id = ?", arguments: [jobID])
+            #expect(skipped == 0)
+            // The counter it sits beside is untouched — v25 adds, it does not recompute.
+            let ingested = try Int.fetchOne(
+                db, sql: "SELECT ingested_count FROM job WHERE id = ?", arguments: [jobID])
+            #expect(ingested == 34)
+        }
+    }
+
+    @Test("skipped_count is NOT NULL with a 0 default — an INSERT that omits it still works")
+    func columnIsNotNullWithDefault() throws {
+        let dbQueue = try makeMigratedQueue()
+        let nn = try dbQueue.read { try columnNotNull($0, table: "job") }
+        #expect(nn["skipped_count"] == 1)
+
+        // Every existing INSERT names its columns and none of them names this one, so the
+        // default is what keeps them compiling — including `Job.insert` before a first ping.
+        try dbQueue.write { db in
+            try db.execute(sql: """
+                INSERT INTO job (id, platform, status, ingested_count, created_at, updated_at)
+                VALUES ('job-no-skip', 'pinterest', 'open', 0, ?, ?);
+                """, arguments: [Self.base, Self.base])
+        }
+        try dbQueue.read { db in
+            let defaulted = try Int.fetchOne(
+                db, sql: "SELECT skipped_count FROM job WHERE id = 'job-no-skip'")
+            #expect(defaulted == 0)
+        }
+    }
+
+    @Test("v25 leaves job_item alone — the download-skip set survives the upgrade")
+    func itemsSurvive() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v24")
+        let jobID = try dbQueue.write { db in try seedJob(db) }
+
+        try Migrator.makeMigrator().migrate(dbQueue)   // apply v25
+
+        try dbQueue.read { db in
+            let sources = try String.fetchAll(
+                db, sql: "SELECT source_id FROM job_item WHERE job_id = ?",
+                arguments: [jobID])
+            #expect(sources == ["note-1"])
         }
     }
 }

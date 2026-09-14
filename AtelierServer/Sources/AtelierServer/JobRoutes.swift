@@ -120,6 +120,34 @@ public struct JobRoutes: Sendable {
         }
     }
 
+    /// `POST /jobs/{id}/progress` — a running sweep's heartbeat. Body optionally
+    /// carries `{ skipped }` (default 0). 200 + the job's current status, 400 on a
+    /// malformed body or a negative count, 404 if the job is absent.
+    ///
+    /// The sweep's ONLY other sign of life is a relayed item, and a sweep can go
+    /// minutes without relaying one — a dedup skip never reaches this server at all —
+    /// so without this the 90s staleness reconciler paused live sweeps out from under
+    /// themselves. The reply carries the job's status but the extension deliberately
+    /// does NOT halt on it yet: the pause/cancel handshake stays on the relay path
+    /// (7A), and giving a heartbeat a second way to stop a sweep is its own change.
+    public func handleProgress(jobID: UUID, body: Data) async -> JobHandlerResult {
+        let skipped: Int
+        do {
+            skipped = try JobDecoder.decodeProgress(body: body)
+        } catch let error as JobDecodeError {
+            return JobHandlerResult(statusCode: 400, response: .error(error.message))
+        } catch {
+            return JobHandlerResult(statusCode: 400, response: .error("Bad request."))
+        }
+        do {
+            let status = try await ledger.recordJobProgress(
+                jobID: jobID, skipped: skipped, now: Date())
+            return JobHandlerResult(statusCode: 200, response: .progress(jobStatus: status))
+        } catch {
+            return Self.mapLedgerError(error)
+        }
+    }
+
     /// Map a thrown ledger error to a `JobHandlerResult`: an absent job is a 404
     /// (`AtelierError.notFound`), anything else a 500.
     private static func mapLedgerError(_ error: Error) -> JobHandlerResult {

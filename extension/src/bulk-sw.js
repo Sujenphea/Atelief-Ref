@@ -4,7 +4,8 @@
 // for every localhost op (only the SW can reach 127.0.0.1). This is the pure,
 // injectable dispatcher — `handleBulkMessage(message, deps)` — with all
 // collaborators (the /jobs wrappers, `ingestOne`, the token) injected, so the whole
-// open/known/relay/complete matrix is unit-tested with no chrome.* and no network.
+// open/known/relay/progress/complete matrix is unit-tested with no chrome.* and no
+// network.
 // The thin `chrome.runtime.onMessage` glue that supplies the real deps lives in
 // sw.js.
 
@@ -21,7 +22,7 @@ import { isAllowedMediaHost, isAllowedBundleHost } from "./media-hosts.js";
  * resolve video.
  */
 export async function handleBulkMessage(message, {
-  token, fetchImpl, ingestOne, openJob, fetchKnownSources, completeJob,
+  token, fetchImpl, ingestOne, openJob, fetchKnownSources, reportJobProgress, completeJob,
 }) {
   switch (message.type) {
     case BULK.open:
@@ -67,6 +68,13 @@ export async function handleBulkMessage(message, {
         caps: message.caps || null, // server byte caps (13A) — enforced pre-download
       });
     }
+
+    case BULK.progress:
+      // A heartbeat is a localhost op like any other, so it takes the same SW route the
+      // job open/close do — a content script cannot reach 127.0.0.1 without CORS. The
+      // reply is the job's current status, which the controller deliberately does NOT act
+      // on: honouring a pause/cancel stays on the relay path (7A).
+      return await reportJobProgress(message.jobId, message.skipped || 0, { token, fetchImpl });
 
     case BULK.complete:
       return await completeJob(message.jobId, message.status || "complete", { token, fetchImpl });

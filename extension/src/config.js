@@ -189,6 +189,28 @@ export const FEED_RESET_SETTLE_MS = 1200;
  */
 export const MAX_VIDEO_CANDIDATES = 4;
 
+/**
+ * How often a running sweep pings `POST /jobs/{id}/progress` to say it is alive.
+ *
+ * The app pauses any `open` job whose `updated_at` is older than its
+ * `IngestionModel.staleSweepSeconds` — 90 seconds — and until this existed the ONLY
+ * thing that bumped `updated_at` was an item being RELAYED. A live sweep is quiet for
+ * far longer than 90s at a time: a dedup skip takes no relay and no pacing, and
+ * rednote's note-open pass spends `NOTE_OPEN_PACING_MS` + jitter per note plus up to
+ * `NOTE_OPEN_TIMEOUT_MS` waiting for each one, relaying nothing whenever the notes it
+ * opens hold only already-known items. So the app paused jobs underneath running
+ * sweeps, the next relay came back `jobStatus: "paused"`, and the sweep halted itself
+ * two items into a 116-note board with no error to show for it.
+ *
+ * 30s: a THIRD of the app's window, so two consecutive pings can be lost — a torn-down
+ * SW, a busy tab, a slow loopback — before a live sweep looks dead. Going higher buys
+ * nothing (the ping is one small POST to 127.0.0.1) and eats the margin; going much
+ * lower only adds traffic. It must stay WELL under 90s whatever else changes: the two
+ * numbers sit either side of a process boundary and cannot be one constant, so the
+ * app's `staleSweepSeconds` names this one and this one names it back.
+ */
+export const SWEEP_HEARTBEAT_MS = 30_000;
+
 /** Per-item retry budget for a `retryableFailed` outcome. On exhaustion the item
  * is recorded `retryableFailed` (a later sweep re-attempts it) and the sweep moves
  * on — one bad item NEVER aborts the sweep `[C7]`. Distinct from a `halt` signal

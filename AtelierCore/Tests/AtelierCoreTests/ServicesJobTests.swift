@@ -324,6 +324,84 @@ struct ServicesJobTests {
         #expect(try await services.listJobs().map(\.id) == [running.id])
     }
 
+    // MARK: recordJobProgress (the sweep heartbeat)
+
+    @Test("a ping bumps updated_at, so the staleness reconciler spares a quiet sweep")
+    func progressKeepsAnOpenSweepAlive() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let job = try await services.createJob(platform: .rednote, scope: "board:1")
+        let t0 = try await services.getJob(id: job.id).updatedAt
+
+        // 200s into a relay-free stretch (dedup skips / note-opens) the sweep pings. Without
+        // it `updated_at` is still `t0` and the 90s reconciler pauses a running sweep.
+        _ = try await services.recordJobProgress(
+            jobID: job.id, skipped: 12, now: t0.addingTimeInterval(200))
+
+        let spared = try await services.pauseStaleOpenJobs(
+            olderThan: 90, now: t0.addingTimeInterval(260))
+        #expect(spared.isEmpty)
+        #expect(try await services.jobStatus(forJob: job.id) == .open)
+    }
+
+    @Test("the skipped count is RAISED, never assigned — a resume cannot walk it back")
+    func progressRaisesNeverAssigns() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let job = try await services.createJob(platform: .rednote)
+
+        _ = try await services.recordJobProgress(jobID: job.id, skipped: 82)
+        #expect(try await services.getJob(id: job.id).skippedCount == 82)
+
+        // A resumed sweep reopens the SAME job id with its engine counts back at 0 and
+        // re-skips its way to where it stopped. Assigning would make the number fall.
+        _ = try await services.recordJobProgress(jobID: job.id, skipped: 0)
+        _ = try await services.recordJobProgress(jobID: job.id, skipped: 30)
+        #expect(try await services.getJob(id: job.id).skippedCount == 82)
+
+        // Past the high-water mark it climbs again.
+        _ = try await services.recordJobProgress(jobID: job.id, skipped: 95)
+        #expect(try await services.getJob(id: job.id).skippedCount == 95)
+    }
+
+    @Test("a ping never resurrects a job: no status change, and no updated_at bump")
+    func progressCannotReopenAClosedJob() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        for closed: JobStatus in [.paused, .halted, .complete] {
+            let job = try await services.createJob(platform: .pinterest)
+            try await services.setJobStatus(jobID: job.id, to: closed)
+            let settled = try await services.getJob(id: job.id).updatedAt
+
+            // A sweep that has not yet noticed it was paused keeps breathing for one more
+            // interval. That must not undo the pause, nor make a finished sweep look live.
+            let reported = try await services.recordJobProgress(
+                jobID: job.id, skipped: 7, now: settled.addingTimeInterval(3600))
+
+            #expect(reported == closed)  // the caller is told which case it was
+            let after = try await services.getJob(id: job.id)
+            #expect(after.status == closed)
+            #expect(after.updatedAt == settled)
+            // The count still lands — the skips it reports genuinely happened.
+            #expect(after.skippedCount == 7)
+        }
+    }
+
+    @Test("a ping leaves every other counter alone (it is not an item record)")
+    func progressTouchesOnlyItsOwnFields() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let job = try await services.createJob(platform: .twitter, totalEstimate: 40)
+        try await services.recordJobItem(jobID: job.id, sourceID: "t1", status: .ingested, blobHash: "h1")
+
+        _ = try await services.recordJobProgress(jobID: job.id, skipped: 5)
+
+        let after = try await services.getJob(id: job.id)
+        #expect(after.ingestedCount == 1)        // recomputed from job_item, not from a ping
+        #expect(after.totalEstimate == 40)
+        #expect(try await services.jobItems(forJob: job.id).count == 1)  // no row was written
+    }
+
     // MARK: not-found paths
 
     @Test("job operations on an absent job throw notFound")
@@ -339,6 +417,9 @@ struct ServicesJobTests {
         await #expect(throws: AtelierError.self) { try await services.jobStatus(forJob: ghost) }
         await #expect(throws: AtelierError.self) {
             try await services.recordJobItem(jobID: ghost, sourceID: "x", status: .ingested)
+        }
+        await #expect(throws: AtelierError.self) {
+            try await services.recordJobProgress(jobID: ghost, skipped: 1)
         }
     }
 }

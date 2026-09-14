@@ -35,7 +35,7 @@ import { planCapture, isTextCard, CAPTURE_KIND } from "./capture-plan.js";
 import { MAX_VIDEO_BYTES, MAX_VIDEO_CANDIDATES } from "./config.js";
 import { isBulkMessage } from "./bulk-messages.js";
 import { handleBulkMessage } from "./bulk-sw.js";
-import { openJob, fetchKnownSources, completeJob } from "./bulk-endpoint.js";
+import { openJob, fetchKnownSources, reportJobProgress, completeJob } from "./bulk-endpoint.js";
 import { withBase } from "./base-url.js";
 import { browser } from "./browser.js";
 
@@ -535,7 +535,8 @@ if (browser.runtime && browser.runtime.onMessage) {
     if (!isBulkMessage(message)) return false;
     getToken()
       .then((token) => handleBulkMessage(message, {
-        token, fetchImpl: fetch, ingestOne, openJob, fetchKnownSources, completeJob,
+        token, fetchImpl: fetch, ingestOne, openJob, fetchKnownSources,
+        reportJobProgress, completeJob,
       }))
       .then((payload) => sendResponse(payload))
       .catch((error) => sendResponse({ __error: String(error) }));

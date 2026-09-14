@@ -3,14 +3,19 @@
 // The durable sweep loop (the engine) runs in the CONTENT SCRIPT so it survives the
 // SW being torn down mid-sweep (MV3's ~30s idle limit). But only the SW can reach
 // the loopback app (127.0.0.1) without CORS, so every localhost op — open a job,
-// load the known-source set, relay an item, close the job — is proxied to the SW
-// over `chrome.runtime` messaging. This one module names those message types so the
+// load the known-source set, relay an item, report the sweep is alive, close the job
+// — is proxied to the SW over `chrome.runtime` messaging. This one module names those message types so the
 // content and SW sides can't drift on a string literal.
 
 export const BULK = Object.freeze({
   open: "atelier-bulk-open",       // → { jobId, caps }
   known: "atelier-bulk-known",     // → string[] (sourceIds)
   relay: "atelier-bulk-relay",     // → an ingestOne result (classified content-side)
+  // → the job's current status. The sweep's periodic heartbeat (`SWEEP_HEARTBEAT_MS`),
+  // carrying its live skipped count. It is its OWN message rather than a field on
+  // `relay` because the stretches it exists to cover — a run of dedup skips, a note-open
+  // pass, a scroll — produce no relay to ride on, and often no item at all.
+  progress: "atelier-bulk-progress",
   complete: "atelier-bulk-complete", // → true
   // → { text } — a platform JS bundle, fetched BY THE SW. Not a localhost op: it is
   // here because a content script's cross-origin fetch is bound by the page's CORS,

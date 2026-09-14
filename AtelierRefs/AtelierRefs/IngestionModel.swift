@@ -1499,6 +1499,13 @@ final class IngestionModel: ObservableObject {
     /// An `open` sweep idle this long (seconds) is treated as interrupted and paused.
     /// Set safely past the engine's 30s max item backoff so a live-but-throttled sweep
     /// isn't falsely reconciled; if it is, the browser loop halts cleanly and resumes.
+    ///
+    /// "Idle" used to mean "has not RELAYED an item", which a live sweep can be for
+    /// minutes at a stretch, so this reconciler was pausing running sweeps. A sweep now
+    /// also pings `POST /jobs/{id}/progress` on its own timer — `SWEEP_HEARTBEAT_MS` in
+    /// the extension's `config.js`, a third of this, so two pings can be lost before a
+    /// live sweep looks dead. The two numbers live either side of a process boundary and
+    /// cannot be one constant; each names the other.
     static let staleSweepSeconds: TimeInterval = 90
 
     /// Whether the user has accepted the bulk-import notice. Gates the first sweep
@@ -1517,8 +1524,20 @@ final class IngestionModel: ObservableObject {
 
         /// Items whose bytes landed (fresh + dedup).
         var ingested: Int { (counts[.ingested] ?? 0) + (counts[.deduped] ?? 0) }
-        /// Items skipped as already-known (P14).
-        var skipped: Int { counts[.skipped] ?? 0 }
+        /// Items skipped as already-known (P14) — from the sweep's progress ping, NOT
+        /// from `counts`.
+        ///
+        /// This read `counts[.skipped]`, and that number is structurally always 0: a
+        /// `job_item` row exists only for something that came through `/ingest`, and a
+        /// dedup skip is decided in the browser against the known-set and never relayed.
+        /// Nothing in the app writes `JobItemStatus.skipped` either, so the tab told a
+        /// re-sweep that skipped 82 of 116 notes that it had skipped none.
+        ///
+        /// The two are NOT summed, even though it looks like they could be. The engine
+        /// tallies dedup skips and typed relay skips into ONE `counts.skipped`, and that
+        /// is the number the ping carries — so the day something does record a `skipped`
+        /// item row, adding it here would count those twice. One number, one source.
+        var skipped: Int { job.skippedCount }
         /// Items that failed (retryable + permanent).
         var failed: Int { (counts[.retryableFailed] ?? 0) + (counts[.permanentFailed] ?? 0) }
         /// Temporary failures (429/timeout/5xx) — a retry can recover these.

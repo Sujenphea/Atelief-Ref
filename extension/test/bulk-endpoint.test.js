@@ -7,7 +7,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { openJob, fetchKnownSources, completeJob } from "../src/bulk-endpoint.js";
+import {
+  openJob, fetchKnownSources, reportJobProgress, completeJob,
+} from "../src/bulk-endpoint.js";
 import { TOKEN_HEADER } from "../src/endpoint.js";
 import { BASE_CACHE_KEY, STABLE_BASE, makeMemoryStorage } from "../src/base-url.js";
 
@@ -66,6 +68,39 @@ test("fetchKnownSources: GETs the sourceIds array", async () => {
 test("fetchKnownSources: a 404 throws", async () => {
   const { fetchImpl } = fakeFetch(404, { status: "error", error: "no such job" });
   await assert.rejects(() => fetchKnownSources("X", { token: "T", fetchImpl, storage: resolvedStorage() }), /no such job/);
+});
+
+test("reportJobProgress: POSTs the skipped count, returns the job's current status", async () => {
+  const { fetchImpl, calls } = fakeFetch(200, { status: "progress", jobStatus: "open" });
+  const status = await reportJobProgress("JOB-1", 82, { token: "T", fetchImpl, storage: resolvedStorage() });
+
+  assert.equal(status, "open");
+  assert.match(calls[0].url, /\/jobs\/JOB-1\/progress$/);
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(calls[0].init.headers[TOKEN_HEADER], "T");
+  assert.deepEqual(JSON.parse(calls[0].init.body), { skipped: 82 });
+});
+
+test("reportJobProgress: a ZERO count is still sent — the ping is the point, not the number", async () => {
+  // A sweep scrolling or waiting on a note-open has skipped nothing new and is exactly the
+  // sweep the 90s reconciler was pausing; an omitted body would be a heartbeat that isn't one.
+  const { fetchImpl, calls } = fakeFetch(200, { status: "progress", jobStatus: "open" });
+  await reportJobProgress("JOB-1", 0, { token: "T", fetchImpl, storage: resolvedStorage() });
+  assert.deepEqual(JSON.parse(calls[0].init.body), { skipped: 0 });
+});
+
+test("reportJobProgress: reports a pause the sweep has not relayed into yet", async () => {
+  const { fetchImpl } = fakeFetch(200, { status: "progress", jobStatus: "paused" });
+  assert.equal(
+    await reportJobProgress("JOB-1", 3, { token: "T", fetchImpl, storage: resolvedStorage() }),
+    "paused");
+});
+
+test("reportJobProgress: a 404 (job gone) throws with the server error", async () => {
+  const { fetchImpl } = fakeFetch(404, { status: "error", error: "Job not found." });
+  await assert.rejects(
+    () => reportJobProgress("X", 1, { token: "T", fetchImpl, storage: resolvedStorage() }),
+    /Job not found/);
 });
 
 test("completeJob: POSTs the target status", async () => {
