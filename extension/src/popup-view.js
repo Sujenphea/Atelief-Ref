@@ -126,6 +126,9 @@ export function terminalMessage(result) {
     // 098 R7: a PARTIAL expansion is its own outcome. "Done — 412 ingested" is the same
     // sentence whether every note gave up its photos or forty of them quietly kept just a
     // cover, and the whole reason the toggle exists is the difference between those two.
+    // Since changelog 495 the shortfall also carries the RATIO, because on a virtualised
+    // board the shortfall is most of the board: this is the one line a user reads, so a
+    // sweep that expanded 13 of 116 has to say 13 of 116 here or it reads as a success.
     const shortfall = expansionShortfall(result.expansion);
     return shortfall ? `Done, partly expanded — ${n} ingested (${shortfall}).` : `Done — ${n} ingested.`;
   }
@@ -155,12 +158,33 @@ export function haltReason(result) {
 }
 
 /** How an expansion pass fell short, phrased for the status line, or null when it did not.
- * Kept apart from `terminalMessage` so the two reasons a sweep can be partial — notes that
- * would not expand, and a budget that ran out — are each named rather than collapsed into
- * "partial". A user can act on the second (sweep again) and not on the first. */
+ * Kept apart from `terminalMessage` so the reasons a sweep can be partial are each named
+ * rather than collapsed into "partial" — they ask the user for different things, and one of
+ * them asks for nothing they can do.
+ *
+ * COVERAGE COMES FIRST, because without it none of the reasons can be read. "4 kept covers
+ * only" is the same sentence whether the sweep expanded four hundred notes or none, and on
+ * a virtualised board it is the second: a live board was measured mounting 13 note cards at
+ * a time against a feed page of 37-38 and a board of 116, so a sweep that looks like it
+ * worked reached a tenth of it (changelog 495). `expanded N of M` is what makes that
+ * visible without arithmetic, and it is stated whenever the sweep attempted anything at
+ * all — a sweep that attempted nothing says nothing, rather than "0 of 0".
+ *
+ * The three reasons, in the order a reader needs them:
+ *   · `unreachable` — the note's card was never on the page, so it could not be OPENED.
+ *     The user can do nothing about it and re-sweeping will not help; it is the grid's
+ *     virtualisation, and 098 2A is the fix.
+ *   · `degraded`    — the note WAS opened and did not give up its photos (a timeout, an
+ *     unparsable body). Reached, no answer.
+ *   · `budgetExhausted` — the only one with an action attached: sweep again. */
 export function expansionShortfall(expansion) {
   if (!expansion || !expansion.partial) return null;
   const parts = [];
+  if (expansion.attempted > 0) parts.push(`expanded ${expansion.expanded || 0} of ${expansion.attempted}`);
+  if (expansion.unreachable > 0) {
+    parts.push(`${expansion.unreachable} had no card on the page to open `
+      + "\u2014 the board only renders what is on screen");
+  }
   if (expansion.degraded > 0) parts.push(`${expansion.degraded} kept covers only`);
   if (expansion.budgetExhausted) parts.push(`the ${expansion.budget}-note budget ran out — sweep again for the rest`);
   return parts.join("; ") || "some notes kept covers only";

@@ -667,6 +667,107 @@ test("a fully successful expansion is NOT partial", async () => {
   assert.equal(expander.stats().partial, false);
 });
 
+// MARK: - coverage, and the unmounted card (changelog 495)
+//
+// The board grid is VIRTUALISED. A probe on a live board on 2026-09-14 counted 13 distinct
+// note cards in the DOM against a feed page of 37-38 notes and a board of 116 — so on a real
+// sweep MOST notes have no card to click when expansion reaches them, `openNote` returns
+// false, and they keep their cover. These tests pin the REPORTING of that, which is all this
+// change does; opening a note while its card is still mounted is 098 2A and is not here.
+
+test("a card that was never on the page is counted apart from a note that would not answer", async () => {
+  // Both keep their cover, and to a user both read as "it did not expand" — but one was
+  // never reached and the other was reached and stayed silent. They want different fixes
+  // (a page-loop redesign vs. a timeout or a parse), so a reader of the stats has to be
+  // able to tell them apart. Before this they were one number.
+  const unmounted = coverItem(NORMAL_ROW, { note_id: "never-mounted" });
+  const silent = coverItem(NORMAL_ROW, { note_id: "will-time-out" });
+  const { expander, state } = scripted({ open: (item) => noteIdOf(item) !== "never-mounted" });
+
+  const out = await expander.expandItems([unmounted, silent]);
+
+  assert.deepEqual(ids(out), ["never-mounted", "will-time-out"], "both covers survive");
+  const stats = expander.stats();
+  assert.equal(stats.unreachable, 1, "the note with no card could not be REACHED");
+  assert.equal(stats.degraded, 1, "the note that timed out was reached and gave no answer");
+  assert.equal(stats.reasons.no_note_card, 1);
+  assert.equal(stats.reasons.timeout, 1);
+  assert.equal(state.closed, 1, "only the note that actually opened is closed");
+  assert.equal(stats.partial, true);
+});
+
+test("a board where no card is mounted reports a total shortfall, not a clean sweep", async () => {
+  // The realistic virtualised case, and the one that must never read as a success. Once
+  // `no_note_card` stopped landing in `degraded`, `partial` had to name `unreachable`
+  // itself or the WORST possible expansion would be the one reporting no shortfall at all.
+  const rows = ["a", "b", "c"].map((id) => coverItem(NORMAL_ROW, { note_id: id }));
+  const { expander, state } = scripted({ open: () => false });
+
+  await expander.expandItems(rows);
+
+  const stats = expander.stats();
+  assert.equal(stats.expanded, 0);
+  assert.equal(stats.unreachable, rows.length);
+  assert.equal(stats.attempted, rows.length, "every one was a note this sweep meant to expand");
+  assert.equal(stats.degraded, 0, "nothing was reached, so nothing can have failed to answer");
+  assert.equal(state.closed, 0, "nothing opened, so nothing is closed");
+  assert.equal(stats.partial, true, "expanding none of the board is not a complete expansion");
+});
+
+test("coverage counts only the notes the sweep MEANT to expand", async () => {
+  // A note a previous sweep already expanded, and a video note with the video toggle off,
+  // were both correctly left alone — neither is a shortfall (098 T5b's refused/degraded
+  // split, and T6c after it). Putting them in the denominator would report a coverage gap
+  // on an 81 %-video board for doing exactly what it was told to do.
+  const expanded = coverItem(NORMAL_ROW, { note_id: "will-expand" });
+  const video = coverItem(VIDEO_ROW, { note_id: "is-video" });
+  const known = coverItem(NORMAL_ROW, { note_id: "already-done" });
+  const { expander } = scripted({
+    open: (item, waiter) => { waiter.onDetail(detailFor(noteIdOf(item))); return true; },
+  });
+  expander.arm({ knownSet: new Set(["already-done:3"]), armed: true });
+
+  await expander.expandItems([expanded, video, known]);
+
+  const stats = expander.stats();
+  assert.equal(stats.attempted, 1);
+  assert.equal(stats.expanded, stats.attempted, "this sweep expanded everything it set out to");
+  assert.equal(stats.refused, 1);
+  assert.equal(stats.skippedKnown, 1);
+  assert.equal(stats.partial, false);
+});
+
+test("a note the budget never reached is inside the coverage, not outside it", async () => {
+  // "We ran out" is a shortfall, not a decision about that note — so it belongs in the
+  // denominator, and `expanded 1 of N` is what says how far the sweep actually got.
+  const rows = [NORMAL_ROW, ...BOARD.data.notes.filter((n) => n.type === "normal")]
+    .map((row, i) => coverItem(row, { note_id: `note-${i}` }));
+  assert.ok(rows.length >= 2);
+  const { expander } = scripted({
+    budget: 1,
+    open: (item, waiter) => { waiter.onDetail(detailFor(noteIdOf(item))); return true; },
+  });
+
+  await expander.expandItems(rows);
+
+  const stats = expander.stats();
+  assert.equal(stats.attempted, rows.length);
+  assert.equal(stats.expanded, 1);
+  assert.equal(stats.unreachable, 0, "a budget that ran out is not a card that was missing");
+});
+
+test("expansion that was never given a note reports no coverage to misread", async () => {
+  // A refused sweep opens ZERO notes (changelog 491/492's reset work guarantees it), and a
+  // sweep of an empty board attempts nothing. Neither is a shortfall, and neither may
+  // produce a ratio — "expanded 0 of 0" is a sentence about nothing.
+  const { expander } = scripted();
+  await expander.expandItems([]);
+  const stats = expander.stats();
+  assert.equal(stats.attempted, 0);
+  assert.equal(stats.unreachable, 0);
+  assert.equal(stats.partial, false);
+});
+
 test("an empty page is returned untouched — no opens, no pacing, no stats", async () => {
   const { expander, state } = scripted();
   const empty = [];
@@ -681,6 +782,9 @@ test("an item with no note id keeps itself rather than being dropped", async () 
   assert.deepEqual(await expander.expandItems([orphan]), [orphan]);
   assert.deepEqual(state.opened, []);
   assert.equal(expander.stats().reasons.no_note_id, 1);
+  // It is still a note this sweep set out to expand — an id it could not read is a
+  // shortfall like any other, not a note it deliberately passed over.
+  assert.equal(expander.stats().attempted, 1);
 });
 
 // MARK: - the live page driver (browser glue)

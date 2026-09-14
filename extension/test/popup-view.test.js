@@ -271,6 +271,65 @@ test("terminalMessage: a cover-only sweep is not reported as partial", () => {
     "Done — 37 ingested.");
 });
 
+// MARK: - coverage, on a virtualised board (changelog 495)
+
+test("terminalMessage: a sweep that reached a tenth of the board says WHICH tenth", () => {
+  // The measured live case: the grid mounts ~13 note cards at a time, a feed page carries
+  // 37-38 notes, the board holds 116 — so expansion reaches a fraction of it and the rest
+  // have no card to click. Without the ratio this is "Done, partly expanded — 77 ingested
+  // (103 kept covers only)": true, and it still leaves the user to work out that the sweep
+  // got a ninth of what the toggle promised.
+  const line = terminalMessage({
+    status: "complete",
+    counts: { ingested: 77 },
+    expansion: {
+      mode: "expansion", budget: 400, attempted: 116, expanded: 13, unreachable: 103,
+      degraded: 0, budgetExhausted: false, partial: true,
+    },
+  });
+
+  assert.match(line, /partly expanded/);
+  assert.match(line, /13 of 116/, "the coverage is stated, not left as arithmetic");
+  assert.match(line, /103/, "and so is the size of what it could not reach");
+  // A note that was never opened did not "keep its cover" in the sense that phrase carries
+  // — that one is for a note the sweep reached and that gave nothing back.
+  assert.doesNotMatch(line, /kept covers only/);
+});
+
+test("expansionShortfall: 'could not reach it' and 'reached it, no answer' stay separate", () => {
+  const both = expansionShortfall({
+    partial: true, attempted: 10, expanded: 4, unreachable: 5, degraded: 1, budgetExhausted: false,
+  });
+  assert.match(both, /expanded 4 of 10/);
+  assert.match(both, /5 had no card/, "could not reach it");
+  assert.match(both, /only renders what is on screen/, "…and why, since the user can do nothing about it");
+  assert.match(both, /1 kept covers only/, "reached it, no answer");
+});
+
+test("expansionShortfall: a sweep that attempted nothing states no ratio", () => {
+  // Expansion on and nothing ever opened — an empty board, or a sweep refused before it
+  // held a page. "expanded 0 of 0" is a sentence about nothing; whatever else is true still
+  // has to read.
+  const line = expansionShortfall({
+    partial: true, attempted: 0, expanded: 0, unreachable: 0, degraded: 0,
+    budgetExhausted: true, budget: 400,
+  });
+  assert.doesNotMatch(line, /of 0/);
+  assert.match(line, /400-note budget ran out/);
+});
+
+test("expansionShortfall: an exhausted budget beside heavy unreachability keeps both", () => {
+  // They co-occur on any board bigger than the budget, and they ask for different things:
+  // one is fixed by sweeping again, the other is not fixed by anything the user can do.
+  const line = expansionShortfall({
+    partial: true, attempted: 400, expanded: 40, unreachable: 360, degraded: 0,
+    budgetExhausted: true, budget: 400,
+  });
+  assert.match(line, /expanded 40 of 400/);
+  assert.match(line, /360 had no card/);
+  assert.match(line, /sweep again/);
+});
+
 test("expansionShortfall: names the two reasons apart, because only one is actionable", () => {
   // "Sweep again" fixes an exhausted budget and does nothing for a note that would not open.
   assert.equal(expansionShortfall(null), null);

@@ -181,6 +181,13 @@ export function knownNoteIndex(knownSet) {
  * `degraded` and turning every sweep partial. */
 const STREAM_REFUSALS = new Set(Object.values(STREAM_REFUSAL));
 
+/** "There was no card on the page to open" — `openAndRead`'s third outcome, distinct from
+ * the `null` that means "opened, and nothing usable came back". A sentinel rather than a
+ * second boolean out-param because the two are counted into different fields and a reader
+ * of the stats has to be able to tell them apart; collapsing them is the defect changelog
+ * 495 exists to undo. */
+const UNREACHED = Symbol("unreached");
+
 export function createNoteExpander({
   waiter = createNoteDetailWaiter(),
   openNote,
@@ -199,7 +206,22 @@ export function createNoteExpander({
   /** null = the note-level pre-check is DISARMED (the default). A Set = armed. */
   let knownNotes = null;
   const counts = {
+    // Every note this pass SET OUT to expand — the denominator of "expanded N of M", and
+    // the only number that makes the others readable. A note the sweep was never going to
+    // open is not in it: one already expanded by a previous sweep (`skippedKnown`) and a
+    // video note with the video toggle off (`refused`) were both correctly left alone, and
+    // counting them here would depress a ratio that is meant to measure a SHORTFALL.
+    attempted: 0,
     opened: 0, expanded: 0, degraded: 0, refused: 0, skippedKnown: 0, images: 0,
+    // COULD NOT REACH THE NOTE, as against `degraded`'s "reached it and it did not answer".
+    // `openNote` returned false: the note's card was not in the DOM, so there was no anchor
+    // to click and no note-open ever happened. That is not a note that misbehaved, it is a
+    // STRUCTURAL limit of driving a virtualised grid — see `findLink` below, where a live
+    // board was measured holding 13 mounted cards against a feed page of 37-38. It is
+    // counted apart from `degraded` because the two ask for different fixes: a degradation
+    // wants a longer timeout or a better parse, this wants the note opened while its card
+    // is still mounted (098 2A), which is a redesign of WHEN expansion runs.
+    unreachable: 0,
     // Split out from `images` since T6c: a stream is not a picture, and a board that
     // reported "37 images" for 30 videos and 7 carousels would be telling the user
     // something false about what it saved.
@@ -247,12 +269,16 @@ export function createNoteExpander({
     }
   }
 
-  /** Open one note, read its detail, and ALWAYS put the board back. */
+  /** Open one note, read its detail, and ALWAYS put the board back.
+   *
+   * Three outcomes, not two: the detail, `null` for "opened and gave nothing usable", and
+   * `UNREACHED` for "there was never a card to open". The caller must be able to tell the
+   * last two apart, so they are different values rather than one falsy one. */
   async function openAndRead(item, noteId) {
     let isOpen = false;
     try {
       isOpen = (await openNote(item)) !== false;
-      if (!isOpen) { note("no_note_card"); return null; }
+      if (!isOpen) { note("no_note_card"); return UNREACHED; }
       return await awaitDetail(noteId, item.xsecToken ?? null);
     } finally {
       // In a `finally` because the challenge throw passes through here too: a sweep that
@@ -276,9 +302,13 @@ export function createNoteExpander({
       const kind = item && item.provenance && item.provenance.rawMetadata
         ? item.provenance.rawMetadata.kind : null;
 
-      if (!noteId) { note("no_note_id"); counts.degraded += 1; out.push(item); continue; }
+      if (!noteId) { note("no_note_id"); counts.attempted += 1; counts.degraded += 1; out.push(item); continue; }
       if (knownNotes && knownNotes.has(noteId)) { counts.skippedKnown += 1; continue; }
       if (kind === "video" && !resolveVideo) { note("video"); counts.refused += 1; out.push(item); continue; }
+      // Past this line the note is a CANDIDATE: the sweep meant to expand it, and whether
+      // it did is this pass's coverage rather than a decision it made on purpose. A note
+      // the budget never reached counts too — "we ran out" is a shortfall, not a choice.
+      counts.attempted += 1;
       if (counts.opened >= budget) {
         if (!budgetExhausted) {
           budgetExhausted = true;
@@ -292,6 +322,7 @@ export function createNoteExpander({
       await pace();
       counts.opened += 1;
       const parsed = await openAndRead(item, noteId);
+      if (parsed === UNREACHED) { counts.unreachable += 1; out.push(item); continue; }
       if (!parsed) { counts.degraded += 1; out.push(item); continue; }
       if (parsed.unsupported) {
         // `items: []` with a reason means KEEP THE COVER (098 R7 / changelog 485). It never
@@ -347,7 +378,18 @@ export function createNoteExpander({
      * What this sweep's expansion actually did (098 R7's first-class outcome).
      *
      * `partial` is the load-bearing field: true when this sweep expanded LESS than it set
-     * out to — a note that would not open or would not answer, or a budget that ran out.
+     * out to — a note that could not be REACHED, a note that would not answer, or a budget
+     * that ran out. `unreachable` is named in it explicitly rather than riding inside
+     * `degraded`: pulling the unmounted-card case out of `degraded` (so a reader can tell
+     * "no card on the page" from "the page did not answer") would otherwise have made a
+     * board where EVERY note was unreachable report `degraded: 0, partial: false` — a
+     * total failure to expand wearing the sentence of a complete one. The truth value is
+     * unchanged from before the split; only the spelling is.
+     *
+     * `attempted` is the denominator the rest are read against. Without it "4 kept covers
+     * only" is the same line whether the sweep expanded 400 notes or 0, which is exactly
+     * the report a virtualised board produces (13 of 116) and exactly what must not read
+     * as a success.
      *
      * Two things are deliberately NOT shortfalls, and T6c re-examined both rather than
      * inheriting them. A note skipped because it was already expanded is not one. And
@@ -366,7 +408,7 @@ export function createNoteExpander({
       ...counts,
       budgetExhausted,
       reasons: { ...reasons },
-      partial: counts.degraded > 0 || budgetExhausted,
+      partial: counts.degraded > 0 || counts.unreachable > 0 || budgetExhausted,
     }),
   };
 }
@@ -504,6 +546,21 @@ export function createPageNoteDriver({
    * is only the tie-break among tokenised ones. A tokenless anchor is still clicked when it
    * is the ONLY one, because a 404 that degrades is strictly better than refusing a note
    * whose card is plainly there; it is logged, because it is a shape change worth seeing.
+   *
+   * WHAT THIS CANNOT DO, MEASURED. The board grid is VIRTUALISED: it mounts roughly a
+   * screenful of cards and unmounts the rest. A console probe on a live board
+   * (`/board/69322476000000001202811f`, 2026-09-14) counted the DISTINCT note cards in the
+   * DOM and found **13**, while one feed page carries **37-38** notes and the whole board
+   * holds **116**. A note with no mounted card has no anchor, so this returns null,
+   * `openNote` returns false, and the note is counted `unreachable` and keeps its cover.
+   *
+   * That is not a bug in the selector and no selector can fix it — the element is not in
+   * the document. It is a consequence of WHEN expansion runs: a whole feed page of 37-38
+   * notes is expanded AFTER that page has arrived, by which time the grid has scrolled on
+   * and most of those cards are gone. The fix is 098 2A — interleave the opening with the
+   * scrolling so each note is opened while its card is still mounted — and it is a
+   * redesign of the source's page loop, not of this function. Until then this file's job
+   * is to report the shortfall accurately (changelog 495), not to hide it.
    *
    * ONLY the note id is ever interpolated into the selector, and only after the id guard —
    * so nothing can smuggle a selector through an attribute. The token is never interpolated

@@ -222,7 +222,12 @@ export async function runBulkSweep(spec, {
   // A sweep where some notes expanded and some kept their cover is NOT the same sweep as
   // one where all of them expanded, and before this it reported identically (098 R7). The
   // stats ride out on the result so the popup, the log line and any caller can tell them
-  // apart — `expansion.partial` is the one field that answers it.
+  // apart — `expansion.partial` is the one field that answers it, and since changelog 495
+  // `expansion.attempted` / `expanded` carry the COVERAGE beside it: on a virtualised board
+  // the shortfall is most of the board (13 cards mounted against 116 notes), so "partial"
+  // alone understates it by an order of magnitude. `unreachable` is the part of that
+  // shortfall nobody can act on — no card on the page, so no note-open — as against
+  // `degraded`, which is a note that was opened and did not answer.
   return { jobId, caps, ...result, expansion: expansionStats };
 }
 
