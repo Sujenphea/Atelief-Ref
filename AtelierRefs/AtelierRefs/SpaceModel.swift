@@ -795,8 +795,48 @@ final class SpaceModel: ObservableObject {
 
     /// Add a frame element occupying `worldRect`. Frames sit BEHIND the board
     /// content (lowest z) so the references they group draw on top. Selects it.
-    func addFrame(worldRect: CGRect) {
-        addElement(kind: .frame, style: ElementRendering.defaultFrameStyle(), rect: worldRect, behind: true)
+    ///
+    /// `actionName` names the ⌘Z step, because two gestures reach the same write: the
+    /// `F` tool draws a frame, and ⌘G derives one from a selection (100 §4). Identical
+    /// rows, different verbs — and the undo menu is the only place the user is told
+    /// which one they did.
+    func addFrame(worldRect: CGRect, actionName: String = "Add Frame") {
+        addElement(kind: .frame, style: ElementRendering.defaultFrameStyle(), rect: worldRect,
+                   behind: true, actionName: actionName)
+    }
+
+    /// Wrap the current multi-selection in an ordinary frame — the model half of ⌘G
+    /// (100 · P1). Returns the tiles the new frame ADOPTED: members that were never
+    /// selected (100 §3), which P3 washes. Empty in the common case where the selection
+    /// already IS the membership, and correctly silent there.
+    ///
+    /// The gesture is one keystroke's worth of work and deliberately nothing more (100
+    /// §1). It creates no entity, no stored member set and no parent pointer — just the
+    /// frame you would have drawn by hand around the cluster, which is why ⌘Z reverses
+    /// it exactly: no tile was moved, restacked or reparented, so there is nothing to
+    /// put back but the frame. That is a direct dividend of membership staying derived
+    /// (062 §6).
+    ///
+    /// Everything else is already built. ``addFrame(worldRect:actionName:)`` places it
+    /// at the lowest z (so the references it groups draw on top), selects it alone (it
+    /// is what you just made and what you will drag), and registers the single undo
+    /// step.
+    ///
+    /// Reads the LIVE tiles rather than ``items``: a drag or an arrange moves a tile in
+    /// memory and persists without reloading, so `items` can still hold the pre-move
+    /// x/y. The frame must land around what the user can SEE — the same reason
+    /// ``placedItems`` exists.
+    ///
+    /// A no-op below two tiles (100 §4), and for a selection whose rows draw nothing —
+    /// an unresolved asset has no tile, so it contributes no geometry to a rect that is
+    /// meant to enclose what is on screen.
+    @discardableResult
+    func groupSelectionInFrame() -> Set<Int> {
+        let content = self.content()
+        guard let bounds = SpaceContent.groupBounds(
+            for: selectedTileIDs(in: content), in: content.tiles) else { return [] }
+        addFrame(worldRect: bounds.rect, actionName: "Group in Frame")
+        return bounds.adopted
     }
 
     /// Add a text element occupying `worldRect`, on TOP of the content. Selects it.
@@ -827,7 +867,7 @@ final class SpaceModel: ObservableObject {
             x: worldRect.minX, y: worldRect.minY,
             width: hugs ? measured.width + 2 * TextMetrics.padding : worldRect.width,
             height: measured.height + 2 * TextMetrics.padding)
-        addElement(kind: .text, style: style, rect: rect, behind: false)
+        addElement(kind: .text, style: style, rect: rect, behind: false, actionName: "Add Text")
     }
 
     /// Paste plain text from another app as a text box centred on `worldPoint` (065).
@@ -850,7 +890,9 @@ final class SpaceModel: ObservableObject {
     /// grows downward rather than off the side of the board.
     static let pastedTextWidth: CGFloat = 320
 
-    private func addElement(kind: SpaceItemKind, style: ElementStyle, rect: CGRect, behind: Bool) {
+    private func addElement(
+        kind: SpaceItemKind, style: ElementStyle, rect: CGRect, behind: Bool, actionName: String
+    ) {
         let z = behind
             ? (items.map(\.item.z).min() ?? 0) - 1
             : (items.map(\.item.z).max() ?? -1) + 1
@@ -861,7 +903,7 @@ final class SpaceModel: ObservableObject {
                     x: Double(rect.minX), y: Double(rect.minY),
                     w: Double(rect.width), h: Double(rect.height), z: z)
                 self.selectedItemIDs = [created.id] // select the new element
-                self.registerReversible(kind == .frame ? "Add Frame" : "Add Text",
+                self.registerReversible(actionName,
                     primary: { self.enqueue { await self.performBatch([created], restore: true) } },
                     inverse: { self.enqueue { await self.performBatch([created], restore: false) } })
                 await self.load()
