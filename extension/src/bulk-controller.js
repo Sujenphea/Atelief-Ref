@@ -29,7 +29,8 @@ import { makeSavedFeedFetch, instagramSavedDriver } from "./bulk-instagram.js";
 import { createRednoteSource } from "./rednote-source.js";
 import { isNoteDetailRequest } from "./bulk-rednote.js";
 import {
-  createNoteExpander, createPageFeedResetter, createPageNoteDriver, isRednoteChallenge,
+  createNoteExpander, createPageFeedResetter, createPageNoteDriver, createPageStepScroller,
+  isRednoteChallenge,
 } from "./rednote-detail-client.js";
 import { readVideoCandidates } from "./rednote-video.js";
 import { browser } from "./browser.js";
@@ -473,7 +474,15 @@ function buildRednoteDriver({
     // the default and look like it worked.
     resetFeed: createPageFeedResetter({ win, log }),
     onExpandFailure: (error) => log("note expansion degraded to the cover:", String(error)),
-    expandItems: expansion ? expansion.expandItems : null,
+    // The EXPANDER, not its `expandItems` hook (changelog 497). Expansion now rides the
+    // scroll — a note is opened while its card is still mounted, and each note is yielded
+    // the moment it is answered — which the source drives per note, so it needs the whole
+    // object rather than one page-at-a-time function.
+    expander: expansion,
+    // …and the walk that mounts the cards. Built only when notes are being opened: the
+    // cover pass keeps jumping straight to the foot of the document, which is the paging
+    // gesture verified live against a real 116-note board.
+    scrollStep: expansion ? createPageStepScroller({ win, log }) : null,
     // A note-detail REFUSAL is not a degradation (098 D8): it is the same risk-control
     // answer the board feed can give, and degrading past one keeps opening notes against a
     // session rednote has already flagged. The seam re-raises it and the engine halts

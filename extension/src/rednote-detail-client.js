@@ -48,6 +48,7 @@ import { STREAM_REFUSAL } from "./rednote-video.js";
 import {
   NOTE_OPEN_BUDGET, NOTE_OPEN_PACING_MS, NOTE_OPEN_PACING_JITTER_MS,
   NOTE_OPEN_TIMEOUT_MS, NOTE_OPEN_POLL_MS, NOTE_OPEN_SETTLE_MS, FEED_RESET_SETTLE_MS,
+  NOTE_REACH_STEP_RATIO,
 } from "./config.js";
 
 /** How many un-consumed detail bodies to keep. Small on purpose: the expander opens notes
@@ -185,13 +186,29 @@ const STREAM_REFUSALS = new Set(Object.values(STREAM_REFUSAL));
  * the `null` that means "opened, and nothing usable came back". A sentinel rather than a
  * second boolean out-param because the two are counted into different fields and a reader
  * of the stats has to be able to tell them apart; collapsing them is the defect changelog
- * 495 exists to undo. */
+ * 495 exists to undo.
+ *
+ * Since 2A it also means "NOT YET": the caller may scroll and ask again, and only when it
+ * gives up does the note become `unreachable`. That is `retireNote`, below. */
 const UNREACHED = Symbol("unreached");
+
+/** A note whose whole contribution is settled — `items` is everything it will ever yield,
+ * and it will never be asked again. `PENDING` is the other answer: no card was mounted, so
+ * nothing was opened, nothing was spent, and the note is still owed an answer. */
+const settled = (items) => ({ settled: true, items });
+const PENDING = Object.freeze({ settled: false, items: [] });
 
 export function createNoteExpander({
   waiter = createNoteDetailWaiter(),
   openNote,
   closeNote = async () => {},
+  /** Optional `(item) => boolean` — "is this note's card mounted right now?". Supplied by
+   * the live driver so a note whose card is NOT on the page costs nothing at all: no
+   * pacing gap, no click, no budget. Without it the only way to find out is to try, which
+   * is what a single-attempt pass did and what `expandItems` still does — and which, on a
+   * loop that asks again after every scroll, would spend a ~2.4 s pacing gap per miss per
+   * round. Omitted → exactly the pre-2A behaviour. */
+  canOpen = null,
   host = "www.rednote.com",
   resolveVideo = false,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -236,6 +253,32 @@ export function createNoteExpander({
 
   const note = (reason) => { reasons[reason] = (reasons[reason] || 0) + 1; };
 
+  /**
+   * THE LEDGER — the one thing 2A's streaming pass must not get wrong.
+   *
+   * Expansion REPLACES a note's cover with its children. Yield both and the same picture is
+   * ingested twice under two keys (`<note_id>` and `<note_id>:0`), which no dedup-skip can
+   * see: it is exactly the duplicate T5a refused video notes over and T6c chose `<note_id>:v`
+   * to avoid. A single-pass expansion could not make that mistake — each note was visited
+   * once, in one loop, and left with one answer. A pass that ASKS A NOTE AGAIN after every
+   * scroll can, and so can one that meets the same note on two pages (observed live: a board
+   * shifts under a paging sweep and repeats a row).
+   *
+   * So a note's answer is recorded the moment it is settled, and a note that is already
+   * settled yields NOTHING on any later sighting. Every arm of `attemptNote` ends in
+   * `finish`, which is the only place `settled` is constructed for a note with an id — so
+   * "either its cover or its children, exactly once" is structural rather than a rule each
+   * arm has to remember.
+   */
+  const done = new Set();
+  /** Notes already inside `attempted` — the denominator counts a NOTE, not an attempt. */
+  const counted = new Set();
+
+  const finish = (noteId, items) => {
+    if (noteId) done.add(noteId);
+    return settled(items);
+  };
+
   /** The gap before each note-open. A skipped or refused note costs nothing — only a real
    * open is paced, so a re-sweep that skips 380 known notes is not 380 idle waits. */
   const pace = () => sleep(pacingMs + Math.floor(random() * pacingJitterMs));
@@ -277,8 +320,17 @@ export function createNoteExpander({
   async function openAndRead(item, noteId) {
     let isOpen = false;
     try {
+      // The card can unmount BETWEEN `canOpen` saying yes and this click — a virtualised
+      // grid rebuilds on any scroll, including the one a previous note's close restored.
+      // So this guard stays whatever `canOpen` said, and its answer is the same `UNREACHED`:
+      // the note is not lost, it is simply still owed an answer.
       isOpen = (await openNote(item)) !== false;
-      if (!isOpen) { note("no_note_card"); return UNREACHED; }
+      if (!isOpen) return UNREACHED;
+      // The budget counts note-OPENS, and this is the line where one happens. Charging it
+      // before the click (as the single-pass version did, where the two were the same
+      // thing) would let a virtualised board spend its whole 400-note ceiling on cards that
+      // were never there — and spend it again on the same notes after the next scroll.
+      counts.opened += 1;
       return await awaitDetail(noteId, item.xsecToken ?? null);
     } finally {
       // In a `finally` because the challenge throw passes through here too: a sweep that
@@ -294,74 +346,143 @@ export function createNoteExpander({
     }
   }
 
+  /**
+   * ONE attempt at ONE note — the whole per-note decision, and since 2A the unit the
+   * streaming pass works in.
+   *
+   * Returns `settled(items)` when the note's contribution is decided (which is final: see
+   * the ledger above), or `PENDING` when there was no card to click. `PENDING` costs
+   * nothing — no pacing, no open, no budget, no counter — precisely because the caller will
+   * ask again after the next scroll, and a cost paid per ASK rather than per NOTE is a cost
+   * multiplied by however many times the grid has to be walked.
+   *
+   * THROWS only the refusal (a 461 wearing a success envelope), which the caller marks
+   * fatal so the sweep halts resumable rather than degrading past it.
+   */
+  async function attemptNote(item) {
+    const noteId = noteIdOf(item);
+    const kind = item && item.provenance && item.provenance.rawMetadata
+      ? item.provenance.rawMetadata.kind : null;
+
+    if (!noteId) { note("no_note_id"); counts.attempted += 1; counts.degraded += 1; return settled([item]); }
+    // Already answered — a second sighting of the same note, from a repeat row across a
+    // page boundary or from a re-ask that raced its own answer. Yields NOTHING: whatever
+    // this note was going to contribute has already been contributed exactly once.
+    if (done.has(noteId)) { note("duplicate"); return settled([]); }
+    if (knownNotes && knownNotes.has(noteId)) { counts.skippedKnown += 1; return finish(noteId, []); }
+    if (kind === "video" && !resolveVideo) { note("video"); counts.refused += 1; return finish(noteId, [item]); }
+    // Past this line the note is a CANDIDATE: the sweep meant to expand it, and whether
+    // it did is this pass's coverage rather than a decision it made on purpose. A note
+    // the budget never reached counts too — "we ran out" is a shortfall, not a choice.
+    // Counted per NOTE, not per attempt: a note asked four times across four scrolls was
+    // still one note the sweep set out to expand, and counting the asks would inflate the
+    // denominator of `expanded N of M` until the ratio meant nothing.
+    if (!counted.has(noteId)) { counted.add(noteId); counts.attempted += 1; }
+    if (counts.opened >= budget) {
+      if (!budgetExhausted) {
+        budgetExhausted = true;
+        log("rednote: note-open budget of", budget, "spent — the rest of the board keeps its covers");
+      }
+      note("budget");
+      return finish(noteId, [item]);
+    }
+
+    // Ask the page whether there is anything to click BEFORE paying the pacing gap. The
+    // gap exists to space out REQUESTS to rednote, and a note with no mounted card makes
+    // none — so paying it would be a pure tax on a virtualised grid.
+    if (canOpen && !(await canOpen(item))) return PENDING;
+
+    await pace();
+    const parsed = await openAndRead(item, noteId);
+    if (parsed === UNREACHED) return PENDING;
+    if (!parsed) { counts.degraded += 1; return finish(noteId, [item]); }
+    if (parsed.unsupported) {
+      // `items: []` with a reason means KEEP THE COVER (098 R7 / changelog 485). It never
+      // means the note is empty, and dropping it here would lose a picture the cover pass
+      // had already captured.
+      note(parsed.unsupported);
+      // A video that slipped past the board row's `kind` (the row said image, the note
+      // says video) is the same deliberate refusal, not a failure of this sweep.
+      if (parsed.unsupported === "video") counts.refused += 1;
+      // A ladder that yielded nothing is 020's cover-still-only outcome — a TYPED SKIP,
+      // not a shortfall. It does not make the sweep partial: the note was opened, its
+      // ladder was read, and there was no decodable stream in it. Calling that "partly
+      // expanded" would put an 81 %-video board back where T5b's `refused`/`degraded`
+      // split took it out of — reporting partial on every sweep for working correctly.
+      else if (STREAM_REFUSALS.has(parsed.unsupported)) counts.streamRefused += 1;
+      else counts.degraded += 1;
+      return finish(noteId, [item]);
+    }
+    counts.expanded += 1;
+    if (parsed.noteKind === "video") {
+      // The cover rides ALONGSIDE the stream, not replaced by it. Two reasons, and the
+      // second is the load-bearing one: the poster is a real picture at a key
+      // (`<note_id>`) the cover pass already uses, so keeping it costs one dedup-skip and
+      // nothing else; and the stream's ladder can still be exhausted at INGEST time, long
+      // after this parse, at which point 020's "keep the cover still" has to already be
+      // true. It is — the cover is a separate item that ingests on its own.
+      counts.streams += parsed.items.length;
+      return finish(noteId, [item, ...parsed.items]);
+    }
+    counts.images += parsed.items.length;
+    return finish(noteId, parsed.items);
+  }
+
+  /**
+   * GIVE UP on a note that was never reached: its card never mounted while the pass was
+   * anywhere near it, so it keeps the cover the board pass already captured.
+   *
+   * This — not `attemptNote` — is where `unreachable` and `no_note_card` are counted, and
+   * for the same reason the budget moved: the streaming pass asks a note once per scroll,
+   * and counting a miss per ASK would report a board of 116 notes as having hundreds of
+   * unreachable ones. A note is unreachable once, when the pass concedes it.
+   */
+  function retireNote(item) {
+    const noteId = noteIdOf(item);
+    if (noteId && done.has(noteId)) return settled([]);
+    note("no_note_card");
+    counts.unreachable += 1;
+    return finish(noteId, [item]);
+  }
+
+  /**
+   * The other way an attempt can end without an answer: it THREW something that is not a
+   * refusal (a page driver that blew up on a detached node). Fail-open is unchanged — the
+   * note keeps its cover — but it is a DEGRADATION, not an unreachable card: the difference
+   * 495 drew is "could not reach it" versus "reached it and it did not answer", and a throw
+   * out of the open is firmly the second.
+   */
+  function failNote(item, error) {
+    const noteId = noteIdOf(item);
+    if (noteId && done.has(noteId)) return settled([]);
+    note("expand_failed");
+    counts.degraded += 1;
+    log("rednote: expanding a note threw — it keeps its cover:", String(error));
+    return finish(noteId, [item]);
+  }
+
+  /**
+   * The PAGE-AT-A-TIME shape, kept because it is exactly one attempt per note with no
+   * scroll in between — which is what expansion did before 2A, and all a caller without a
+   * scroll to interleave can do. The streaming pass (`rednote-source.js`) drives
+   * `attemptNote`/`retireNote` directly instead, so that a note is asked again once the
+   * grid has moved and its card has mounted.
+   */
   async function expandItems(items) {
     if (!Array.isArray(items) || items.length === 0) return items;
     const out = [];
     for (const item of items) {
-      const noteId = noteIdOf(item);
-      const kind = item && item.provenance && item.provenance.rawMetadata
-        ? item.provenance.rawMetadata.kind : null;
-
-      if (!noteId) { note("no_note_id"); counts.attempted += 1; counts.degraded += 1; out.push(item); continue; }
-      if (knownNotes && knownNotes.has(noteId)) { counts.skippedKnown += 1; continue; }
-      if (kind === "video" && !resolveVideo) { note("video"); counts.refused += 1; out.push(item); continue; }
-      // Past this line the note is a CANDIDATE: the sweep meant to expand it, and whether
-      // it did is this pass's coverage rather than a decision it made on purpose. A note
-      // the budget never reached counts too — "we ran out" is a shortfall, not a choice.
-      counts.attempted += 1;
-      if (counts.opened >= budget) {
-        if (!budgetExhausted) {
-          budgetExhausted = true;
-          log("rednote: note-open budget of", budget, "spent — the rest of the board keeps its covers");
-        }
-        note("budget");
-        out.push(item);
-        continue;
-      }
-
-      await pace();
-      counts.opened += 1;
-      const parsed = await openAndRead(item, noteId);
-      if (parsed === UNREACHED) { counts.unreachable += 1; out.push(item); continue; }
-      if (!parsed) { counts.degraded += 1; out.push(item); continue; }
-      if (parsed.unsupported) {
-        // `items: []` with a reason means KEEP THE COVER (098 R7 / changelog 485). It never
-        // means the note is empty, and dropping it here would lose a picture the cover pass
-        // had already captured.
-        note(parsed.unsupported);
-        // A video that slipped past the board row's `kind` (the row said image, the note
-        // says video) is the same deliberate refusal, not a failure of this sweep.
-        if (parsed.unsupported === "video") counts.refused += 1;
-        // A ladder that yielded nothing is 020's cover-still-only outcome — a TYPED SKIP,
-        // not a shortfall. It does not make the sweep partial: the note was opened, its
-        // ladder was read, and there was no decodable stream in it. Calling that "partly
-        // expanded" would put an 81 %-video board back where T5b's `refused`/`degraded`
-        // split took it out of — reporting partial on every sweep for working correctly.
-        else if (STREAM_REFUSALS.has(parsed.unsupported)) counts.streamRefused += 1;
-        else counts.degraded += 1;
-        out.push(item);
-        continue;
-      }
-      counts.expanded += 1;
-      if (parsed.noteKind === "video") {
-        // The cover rides ALONGSIDE the stream, not replaced by it. Two reasons, and the
-        // second is the load-bearing one: the poster is a real picture at a key
-        // (`<note_id>`) the cover pass already uses, so keeping it costs one dedup-skip and
-        // nothing else; and the stream's ladder can still be exhausted at INGEST time, long
-        // after this parse, at which point 020's "keep the cover still" has to already be
-        // true. It is — the cover is a separate item that ingests on its own.
-        counts.streams += parsed.items.length;
-        out.push(item);
-      } else {
-        counts.images += parsed.items.length;
-      }
-      out.push(...parsed.items);
+      const verdict = await attemptNote(item);
+      out.push(...(verdict.settled ? verdict.items : retireNote(item).items));
     }
     return out;
   }
 
   return {
     expandItems,
+    attemptNote,
+    retireNote,
+    failNote,
     /** Feed an intercepted detail response through to the waiter. */
     onDetail: (json, url) => waiter.onDetail(json, url),
     /**
@@ -555,12 +676,17 @@ export function createPageNoteDriver({
    * `openNote` returns false, and the note is counted `unreachable` and keeps its cover.
    *
    * That is not a bug in the selector and no selector can fix it — the element is not in
-   * the document. It is a consequence of WHEN expansion runs: a whole feed page of 37-38
-   * notes is expanded AFTER that page has arrived, by which time the grid has scrolled on
-   * and most of those cards are gone. The fix is 098 2A — interleave the opening with the
-   * scrolling so each note is opened while its card is still mounted — and it is a
-   * redesign of the source's page loop, not of this function. Until then this file's job
-   * is to report the shortfall accurately (changelog 495), not to hide it.
+   * the document. It was a consequence of WHEN expansion ran: a whole feed page of 37-38
+   * notes was expanded AFTER that page had arrived, by which time the grid had scrolled on
+   * and most of those cards were gone.
+   *
+   * 098 2A (changelog 497) changed the WHEN, not this function. A note that returns null
+   * here is no longer finished — it stays pending, the pass steps the viewport down through
+   * the page (`createPageStepScroller`), and this is asked again once the grid has mounted
+   * the next band of cards. `unreachable` now means "still no card after the pass had
+   * walked the whole page", which is a far smaller set than "no card at the one instant we
+   * happened to look". The numbers above are why the walk exists; what a walked page
+   * actually reaches has not yet been read off a live board.
    *
    * ONLY the note id is ever interpolated into the selector, and only after the id guard —
    * so nothing can smuggle a selector through an attribute. The token is never interpolated
@@ -581,6 +707,26 @@ export function createPageNoteDriver({
   };
 
   return {
+    /**
+     * "Is this note's card mounted right now?" — the cheap half of `openNote`, asked by the
+     * streaming pass before it pays a pacing gap on a note it cannot open (098 2A).
+     *
+     * Deliberately the SAME lookup, not a cheaper approximation: anything that answered
+     * differently from `findLink` would either skip notes that could have been opened or
+     * charge for notes that could not. It is a read of the live DOM and its answer can be
+     * stale by the time the click happens, which is why `openNote` keeps its own guard.
+     */
+    canOpen(item) {
+      const noteId = noteIdOf(item);
+      if (!noteId) return false;
+      try {
+        return findLink(noteId) !== null;
+      } catch (error) {
+        log("rednote: looking up the note card threw:", String(error));
+        return false;
+      }
+    },
+
     async openNote(item) {
       const noteId = noteIdOf(item);
       if (!noteId) return false;
@@ -622,6 +768,56 @@ export function createPageNoteDriver({
       // has been rebuilt around a different offset.
       scrollWindowTo(win, restoreScroll, { log });
     },
+  };
+}
+
+/**
+ * Walk the board DOWN one screen at a time, so a virtualised grid mounts its cards where
+ * the expansion pass can reach them (098 2A, changelog 497).
+ *
+ * The sweep's own paging scroll is `scrollTo(0, scrollHeight)` — one jump to the foot of the
+ * document, which is what makes the SPA fetch the next slice and is measured working against
+ * a real 116-note board. It is also why expansion reached so little: a jump PAST three
+ * screenfuls of cards mounts none of them, so the notes in between never had an anchor to
+ * click. This is the same journey taken in stages.
+ *
+ * It is used ONLY while notes are being opened. The cover pass still jumps, unchanged —
+ * which is the pass that was verified live, and nothing here is allowed to alter it.
+ *
+ * Returns `true` when the viewport actually MOVED (so new cards may have mounted and the
+ * pending notes are worth asking again) and `false` when it was already at the foot — which
+ * is the pass's signal that it has now passed every card of this page and the ones it still
+ * has not reached are not going to be reached. At the foot it still nudges
+ * `scrollTo(0, scrollHeight)`, because that is the gesture the infinite scroll listens for
+ * and the next page has to keep arriving.
+ *
+ * Guarded like every other driver here: a page that cannot be measured degrades to `false`
+ * (the pass gives the rest of the page its covers), never to a throw into the sweep.
+ */
+export function createPageStepScroller({
+  win,
+  ratio = NOTE_REACH_STEP_RATIO,
+  log = () => {},
+} = {}) {
+  return function stepScroll() {
+    try {
+      const doc = win && win.document;
+      const height = (doc && doc.body && doc.body.scrollHeight) || 0;
+      const viewport = (win && win.innerHeight) || 0;
+      // The furthest the viewport can be scrolled: below this the page simply does not go.
+      const foot = Math.max(0, height - viewport);
+      const from = typeof win.scrollY === "number" ? win.scrollY : 0;
+      const step = Math.max(1, Math.round(viewport * ratio));
+      if (from >= foot) {
+        scrollWindowTo(win, height, { log });     // keep the paging trigger alive
+        return false;
+      }
+      scrollWindowTo(win, Math.min(foot, from + step), { log });
+      return true;
+    } catch (error) {
+      log("rednote: stepping the board scroll threw:", String(error));
+      return false;
+    }
   };
 }
 

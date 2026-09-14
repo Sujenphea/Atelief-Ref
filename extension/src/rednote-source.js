@@ -7,7 +7,10 @@
 
 import { parseBoardFeedPage, isFirstBoardFeedRequest, matchesScope } from "./bulk-rednote.js";
 import { createInterceptSource, SourceStallError } from "./intercept-source.js";
-import { FEED_RESET_GRACE_MS, FEED_RESET_TIMEOUT_MS, FEED_RESET_POLL_MS } from "./config.js";
+import {
+  FEED_RESET_GRACE_MS, FEED_RESET_TIMEOUT_MS, FEED_RESET_POLL_MS,
+  NOTE_REACH_SETTLE_MS, NOTE_REACH_ROUNDS,
+} from "./config.js";
 
 /** rednote's stall: scrolling stopped producing pages before an `endOfFeed` one. Thrown
  * so the engine halts the sweep RESUMABLE instead of recording a partial board complete. */
@@ -55,11 +58,21 @@ export function createRednoteSource({
   scope = null,
   onExpandFailure = null,
   // K3b's note-open expansion (098 D4), OPT-IN: omitted, the sweep is the cover pass and
-  // this file is exactly what it was. `isFatalExpandFailure` is what keeps the two kinds
-  // of expansion failure apart — a note that would not open degrades to its cover, a note
-  // rednote REFUSED halts the sweep resumable.
-  expandItems = null,
+  // every line below that mentions a note is skipped. `isFatalExpandFailure` is what keeps
+  // the two kinds of expansion failure apart — a note that would not open degrades to its
+  // cover, a note rednote REFUSED halts the sweep resumable.
+  //
+  // Since 2A this is the EXPANDER ITSELF (`createNoteExpander`), not its `expandItems`
+  // hook, because the pass is no longer page-at-a-time: it needs `attemptNote` and
+  // `retireNote` per note, interleaved with `scrollStep`. See `expandPage` below.
+  expander = null,
   isFatalExpandFailure = null,
+  // `() => boolean` — walk the board down one screen so the virtualised grid mounts its
+  // next band of cards; false when the viewport was already at the foot. Omitted, the pass
+  // gets exactly ONE attempt per note per page, which is what expansion did before 2A.
+  scrollStep = null,
+  reachSettleMs = NOTE_REACH_SETTLE_MS,
+  maxReachRounds = NOTE_REACH_ROUNDS,
   // 2A's in-page feed reset (changelog 494). `resetFeed` is the live page driver
   // (`createPageFeedResetter`) — OMITTED, this file behaves exactly as 493 left it, which
   // is what every test that predates the reset relies on.
@@ -70,8 +83,7 @@ export function createRednoteSource({
   log = () => {},
 } = {}) {
   const source = createInterceptSource({
-    scroll, sleep, host, settleMs, maxIdleRounds, scope, onExpandFailure,
-    expandItems, isFatalExpandFailure,
+    scroll, sleep, host, settleMs, maxIdleRounds, scope,
     matchesScope,
     StallError: RednoteStallError,
     // `parseBoardFeedPage` never throws — a refusal comes back as `error`, which the
@@ -191,6 +203,94 @@ export function createRednoteSource({
     refuseUnlessStarted();
   }
 
+  // ── 098 2A + 3B (changelog 497): open each note while its card is still mounted ────
+  //
+  // THE TWO DEFECTS, both measured on a live 116-note board.
+  //
+  // 2A. The board grid is VIRTUALISED: 13 note cards in the DOM against 37-38 notes in a
+  // feed page. `createPageNoteDriver` can only click a card that exists, and expansion used
+  // to run over a whole page AFTER it arrived — by which time the grid had scrolled on and
+  // most of those cards were gone. So 103 of 116 notes returned "no card on the page" and
+  // degraded to their covers (changelog 495 made that visible; it did not fix it).
+  //
+  // 3B. Nothing was yielded until the WHOLE page had been expanded: `items = await
+  // expandItems(items)` and only then the yields. At ~2.4 s pacing plus up to 8 s of
+  // waiting per note, that is two to five minutes before the first item reaches the app.
+  //
+  // ONE cause, one fix. The scroll already mounts cards as it goes, so expansion RIDES the
+  // scroll instead of fighting it: work the page's notes in feed order, open the ones whose
+  // cards are mounted NOW, yield each note the moment it is answered, step the viewport
+  // down, ask the rest again. A note is conceded to its cover only when the pass has walked
+  // the whole page and so has demonstrably passed it.
+  //
+  // THE TRAP, and it is the important one. Expansion REPLACES a note's cover with its
+  // children, so a note must yield its cover OR its children, never both and never twice —
+  // for a video note the cover and the poster are one picture, and `<note_id>` beside
+  // `<note_id>:0` is one image ingested under two keys with a dedup-skip that cannot see
+  // it. A single pass could not make that mistake; a pass that asks a note again after
+  // every scroll, and meets repeated rows across a page boundary, can. It is prevented in
+  // the expander's ledger (`done`), not here: this loop's own guarantee is narrower and
+  // structural — an entry leaves `pending` at the instant it is settled, and only a settled
+  // entry produces items.
+  const inReach = typeof scrollStep === "function";
+
+  /**
+   * Expand ONE board page, streaming, and yield what each note turns out to be.
+   *
+   * The rounds terminate on the page itself, not on a clock: the walk stops when the
+   * viewport reaches the foot of the document (`scrollStep` false — every card of this page
+   * has now been scrolled past) or when the ceiling of rounds is spent. Whatever is still
+   * pending then gets its cover. Without a `scrollStep` there is exactly one round, which is
+   * the pre-2A behaviour and what a caller with no page to drive can do.
+   */
+  async function* expandPage(items) {
+    let pending = items;
+    for (let round = 0; ; round += 1) {
+      const stillPending = [];
+      for (const item of pending) {
+        let verdict;
+        try {
+          verdict = await expander.attemptNote(item);
+        } catch (error) {
+          // A REFUSAL is not a shortfall. Fail-open assumes the expansion merely did not
+          // arrive; when the platform says the origin turned us away, degrading would keep
+          // the sweep asking — so it is re-raised, the engine halts RESUMABLE, and the
+          // checkpoint survives. Everything already yielded stays ingested, which is the
+          // same trade the board feed's own fatal route makes one page higher up: what
+          // arrived before the refusal is kept, and nothing is relayed after it.
+          if (isFatalExpandFailure && isFatalExpandFailure(error)) throw error;
+          // ...and a silent bonus is how a sweep reports success having captured strictly
+          // less than it meant to (098 R7). The note degrades to its cover — by itself now,
+          // not dragging the other 37 notes of its page down with it.
+          if (onExpandFailure) {
+            try { onExpandFailure(error, [item]); } catch { /* never kill the sweep */ }
+          }
+          verdict = expander.failNote(item, error);
+        }
+        if (!verdict.settled) { stillPending.push(item); continue; }
+        yield* verdict.items;
+      }
+      pending = stillPending;
+      if (pending.length === 0) return;
+      if (round + 1 >= maxReachRounds) break;
+      if (!inReach) break;
+      if (!(await scrollStep())) break;      // at the foot: we have passed every card
+      await sleep(reachSettleMs);
+    }
+    // The pass has walked the page and these notes never had a card. They keep the cover the
+    // board pass captured — exactly once, and counted `unreachable` exactly once.
+    for (const item of pending) yield* expander.retireNote(item).items;
+  }
+
+  /** The item stream when notes are being opened: the seam's pages, each one expanded in
+   * scroll order. The seam's own `expandItems` hook cannot serve this and is left to X —
+   * nothing scrolls while it runs, which is the whole of 2A. */
+  async function* expandingItems() {
+    for await (const page of source.pages()) {
+      if (page.items.length > 0) yield* expandPage(page.items);
+    }
+  }
+
   /**
    * WHEN the rule fires is the whole of its correctness, and it is NOT at construction.
    * The controller posts the replay request and returns immediately; the hook's buffered
@@ -220,7 +320,10 @@ export function createRednoteSource({
       judged = true;
       refuseUnlessStarted();
     };
-    for await (const item of source.enumerate()) {
+    // The cover pass is the seam's own `enumerate`, byte for byte what it was: with no
+    // expander nothing below is reached, and the pass verified live against a 116-note
+    // board is not touched by any of 2A.
+    for await (const item of (expander ? expandingItems() : source.enumerate())) {
       if (!judged) judge();
       yield item;
     }

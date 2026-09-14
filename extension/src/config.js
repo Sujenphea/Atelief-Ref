@@ -86,6 +86,38 @@ export const NOTE_OPEN_POLL_MS = 250;
 export const NOTE_OPEN_SETTLE_MS = 400;
 
 // ---------------------------------------------------------------------------
+// rednote NOTE REACH (098 2A / changelog 497). The board grid is VIRTUALISED — a live probe
+// on 2026-09-14 counted 13 mounted note cards against a feed page of 37-38 and a board of
+// 116 — so a note can only be opened while its card is in the DOM. These bound the WALK the
+// expansion pass takes down each page to mount them.
+//
+// Like the feed reset's numbers and unlike `noteOpen`'s, they are NOT threaded through
+// `PLATFORM_PACING`: they describe one SPA's one virtualised grid, there is no second
+// platform to vary them for, and a second access path would add nothing but somewhere for a
+// typo to fall back to a default and look like it worked.
+// ---------------------------------------------------------------------------
+
+/** How far one step moves the viewport, as a fraction of the viewport's own height. Under
+ * 1 on purpose: a full-screen step would place the new band exactly where the old one was
+ * and could skip a row of cards between two mounts, and the cost of the overlap is one
+ * extra step per page, not one extra note-open. */
+export const NOTE_REACH_STEP_RATIO = 0.8;
+
+/** How long to let the grid re-render after a step before asking which cards are mounted.
+ * A virtualiser mounts on its own scroll handler, usually on the next frame; this is the
+ * same "do not issue the next thing in the same tick" settle as `NOTE_OPEN_SETTLE_MS`, a
+ * little longer because a mount is more work than a route change's first paint. */
+export const NOTE_REACH_SETTLE_MS = 600;
+
+/** The CEILING on steps spent walking ONE page down. The stepper stops on its own when it
+ * reaches the foot of the document, which is the honest terminator; this is the guard for
+ * a page that keeps growing under us (a lazy grid that renders as you go) so that one page
+ * can never hold the sweep for ever. A feed page is 37-38 notes ≈ 3-4 screenfuls, so 12
+ * steps is several times what a page should need. Hitting it retires the rest of the page
+ * to covers — the same outcome as reaching the foot, reached the same way. */
+export const NOTE_REACH_ROUNDS = 12;
+
+// ---------------------------------------------------------------------------
 // rednote in-page FEED RESET (098 / changelog 494). The board feed pages FORWARD only, so
 // a sweep that does not hold the opening slice can never fetch it — 493 refuses such a run,
 // and these numbers bound the attempt to put the feed back at its start before it does.

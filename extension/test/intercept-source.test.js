@@ -439,3 +439,85 @@ test("a fatal expansion failure is NOT reported through onExpandFailure", async 
   await collect(source.enumerate()).catch(() => {});
   assert.deepEqual(failures, []);
 });
+
+// MARK: - `pages()`, the loop one level down (098 2A, changelog 497)
+//
+// `enumerate` is `pages` plus X's per-page `expandItems` and the item-level yield. The split
+// exists for a consumer that must do its own work BETWEEN a page and the next scroll —
+// rednote opens each note while its card is still mounted, which nothing can express through
+// `expandItems` because nothing scrolls until `expandItems` has returned.
+//
+// What these pin is that the two are ONE loop rather than two: the queue, the scroll round,
+// the stall and the fatal route are safety decisions, and a second copy of a safety decision
+// is the one that quietly stops agreeing with the first.
+
+/** Drain pages into their id arrays. */
+const pageIds = async (source) => {
+  const out = [];
+  for await (const page of source.pages()) out.push(ids(page.items));
+  return out;
+};
+
+test("pages() hands over whole pages, scrolling for each one exactly as enumerate does", async () => {
+  let scrolls = 0;
+  const source = makeSource({
+    scroll: () => {
+      if (scrolls === 0) source.onResponse(page(["c", "d"]));
+      if (scrolls === 1) source.onResponse(page(["e"], { endOfFeed: true }));
+      scrolls += 1;
+    },
+  });
+  source.onResponse(page(["a", "b"]));
+
+  assert.deepEqual(await pageIds(source), [["a", "b"], ["c", "d"], ["e"]]);
+  assert.equal(scrolls, 2, "a page already queued was scrolled for anyway");
+});
+
+test("the endOfFeed page is YIELDED before the generator closes, not swallowed by the end", async () => {
+  // The order the inline loop had, and the one that matters: rednote expands a page inside
+  // the consumer's body, so a last page that closed the generator before its body ran would
+  // drop a whole page of notes at the end of every board.
+  const seen = [];
+  const source = makeSource();
+  source.onResponse(page(["a", "b"], { endOfFeed: true }));
+  source.onResponse(page(["never"]));
+
+  for await (const p of source.pages()) seen.push(...ids(p.items));
+  assert.deepEqual(seen, ["a", "b"], "the last page's items never reached the consumer");
+});
+
+test("pages() stalls on a wall with the same typed error the item loop throws", async () => {
+  const source = makeSource({ maxIdleRounds: 2 });
+  const error = await pageIds(source).then(() => null, (e) => e);
+  assert.ok(error instanceof SourceStallError, `expected a stall, got ${error}`);
+  assert.equal(error.idleRounds, 2);
+});
+
+test("pages() re-raises a fatal page error, and pre-empts the pages queued behind it", async () => {
+  const fatal = Object.assign(new Error("461 risk control"), { challenge: true });
+  const seen = [];
+  const source = makeSource();
+  source.onResponse(page(["a"]));
+  source.onResponse(page([], { error: fatal }));
+
+  const thrown = await (async () => {
+    try {
+      for await (const p of source.pages()) seen.push(...ids(p.items));
+      return null;
+    } catch (e) { return e; }
+  })();
+  assert.equal(thrown, fatal);
+  assert.deepEqual(seen, [], "a challenge is checked at the TOP of the loop — it outranks a full queue");
+});
+
+test("pages() does NOT apply expandItems — everything below the page belongs to the caller", async () => {
+  // The seam's per-page expansion hook is X's and stays X's. A consumer pulling pages does
+  // its own expansion (rednote's is per note and interleaved with scrolling), and having
+  // both run would expand every note twice.
+  let calls = 0;
+  const source = makeSource({ expandItems: async (items) => { calls += 1; return items; } });
+  source.onResponse(page(["a"], { endOfFeed: true }));
+
+  assert.deepEqual(await pageIds(source), [["a"]]);
+  assert.equal(calls, 0);
+});

@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 
 import {
   createNoteDetailWaiter, createNoteExpander, createPageFeedResetter, createPageNoteDriver,
-  isRednoteChallenge, knownNoteIndex, noteIdOf, DETAIL_BUFFER_LIMIT,
+  createPageStepScroller, isRednoteChallenge, knownNoteIndex, noteIdOf, DETAIL_BUFFER_LIMIT,
 } from "../src/rednote-detail-client.js";
 import { mapBoardNote, parseNoteDetail } from "../src/bulk-rednote.js";
 
@@ -787,6 +787,162 @@ test("an item with no note id keeps itself rather than being dropped", async () 
   assert.equal(expander.stats().attempted, 1);
 });
 
+// MARK: - the per-note seam (098 2A, changelog 497)
+//
+// Expansion is no longer one visit per note: the streaming pass asks a note again after
+// every scroll, because the card that was not mounted a moment ago may be mounted now. That
+// turns three things that used to be the same event into three different ones — an ASK that
+// found no card (costs nothing, decides nothing), the note being SETTLED (its whole
+// contribution, once and for all), and the pass CONCEDING a note it never reached. These
+// pin the seam the streaming loop drives; `expandItems` above is that loop with one ask per
+// note and no scroll in between, which is what expansion did before 2A.
+
+test("an ask that finds no card settles NOTHING — the note is still owed an answer", async () => {
+  const cover = coverItem(NORMAL_ROW);
+  const { expander } = scripted({ open: () => false });
+
+  const verdict = await expander.attemptNote(cover);
+
+  assert.equal(verdict.settled, false, "a missing card ended the note instead of leaving it pending");
+  assert.deepEqual(verdict.items, [], "an unsettled ask must not emit anything — least of all the cover");
+  const stats = expander.stats();
+  assert.equal(stats.unreachable, 0, "an unreachable note is one the pass GAVE UP on, not one it missed once");
+  assert.equal(stats.degraded, 0);
+  assert.equal(stats.partial, false, "a note still being walked towards is not yet a shortfall");
+});
+
+test("a note asked FOUR times and then conceded is one attempt, one unreachable, one cover", async () => {
+  // The counting hazard the streaming pass introduces, and the reason `unreachable` and
+  // `no_note_card` moved out of the ask. A board of 116 notes walked four times would
+  // otherwise report hundreds of unreachable notes and an `expanded N of M` whose M counted
+  // scroll rounds — a ratio measuring the pass's own diligence rather than the board.
+  const cover = coverItem(NORMAL_ROW);
+  const { expander } = scripted({ open: () => false });
+
+  for (let ask = 0; ask < 4; ask += 1) assert.equal((await expander.attemptNote(cover)).settled, false);
+  const retired = expander.retireNote(cover);
+
+  assert.deepEqual(ids(retired.items), [cover.sourceId], "the cover the board pass captured is what it keeps");
+  const stats = expander.stats();
+  assert.equal(stats.attempted, 1, "four asks about one note is one note the sweep set out to expand");
+  assert.equal(stats.unreachable, 1);
+  assert.equal(stats.reasons.no_note_card, 1);
+  assert.equal(stats.partial, true);
+});
+
+test("a note whose card is not mounted costs NO pacing and NO budget, however often it is asked", async () => {
+  // The reason `canOpen` exists. A pacing gap spaces out REQUESTS to rednote, and an ask
+  // that finds no anchor makes none — so paying it per ask per round is a tax that scales
+  // with how hard the pass tries. The budget is the same argument with teeth: charged per
+  // ask, a virtualised board would spend its whole 400-note ceiling on cards that were
+  // never there, and spend it again on the same notes after the next scroll.
+  const cover = coverItem(NORMAL_ROW);
+  const { expander, state } = scripted({ budget: 2, canOpen: () => false });
+
+  for (let ask = 0; ask < 5; ask += 1) await expander.attemptNote(cover);
+
+  assert.deepEqual(state.opened, [], "the page was clicked for a note with no card");
+  assert.deepEqual(state.sleeps, [], "an ask that could not open anything still paid the pacing gap");
+  const stats = expander.stats();
+  assert.equal(stats.opened, 0);
+  assert.equal(stats.budgetExhausted, false, "five asks at a budget of two exhausted the ceiling");
+});
+
+test("a card that unmounts BETWEEN the check and the click leaves the note pending, not lost", async () => {
+  // `canOpen` reads the live DOM and its answer can be stale by the time the click happens:
+  // a virtualised grid rebuilds on any scroll, including the one a previous note's close
+  // restored. So `openNote`'s own guard stays, and it must mean the same thing — try again —
+  // rather than ending the note on the strength of one unlucky instant.
+  const cover = coverItem(NORMAL_ROW);
+  let mounted = false;                       // the check says yes, the click finds nothing
+  const { expander, state } = scripted({
+    canOpen: () => true,
+    open: (item, waiter) => {
+      if (!mounted) return false;
+      waiter.onDetail(detailFor(noteIdOf(item)));
+      return true;
+    },
+  });
+
+  const first = await expander.attemptNote(cover);
+  assert.equal(first.settled, false, "the note was written off for a card that unmounted mid-open");
+  assert.equal(state.closed, 0, "nothing opened, so nothing is closed");
+
+  mounted = true;
+  const second = await expander.attemptNote(cover);
+  assert.equal(second.settled, true);
+  assert.ok(second.items.length > 1, "the retry expanded the note the first ask could not reach");
+  assert.equal(expander.stats().unreachable, 0, "a note that was reached in the end is not unreachable");
+  assert.equal(expander.stats().opened, 1, "the ask that found nothing to click was charged to the budget too");
+});
+
+// MARK: - the ledger: a note yields its cover OR its children, once (changelog 497)
+//
+// Expansion REPLACES a cover with children, so both is one picture ingested under two keys
+// with a dedup-skip that cannot see it — the duplicate T5a refused video notes over and T6c
+// chose `<note_id>:v` to avoid. A single pass could not make that mistake. A pass that asks
+// again after every scroll, and meets repeated rows across a page boundary, can.
+
+test("a note already expanded yields NOTHING when it is met again — not its cover", async () => {
+  // The lethal shape, and it is not hypothetical: a board shifts under a paging sweep and
+  // serves the same row on two pages (observed live). Expanded on the first page and then
+  // conceded on the second, the note would emit `<id>:0…:8` AND `<id>` — the cover and the
+  // children, the one combination that must never happen.
+  const cover = coverItem(NORMAL_ROW);
+  const { expander } = scripted({
+    open: (item, waiter) => { waiter.onDetail(detailFor(noteIdOf(item))); return true; },
+  });
+
+  const first = await expander.attemptNote(cover);
+  assert.ok(first.items.length > 1);
+
+  const again = await expander.attemptNote(cover);
+  assert.deepEqual(again.items, [], "a second sighting re-emitted the note");
+  assert.deepEqual(expander.retireNote(cover).items, [], "conceding an expanded note gave back its cover");
+  assert.equal(expander.stats().unreachable, 0, "a note that expanded was counted unreachable as well");
+  assert.equal(expander.stats().reasons.duplicate, 1, "the repeat is counted, not merely dropped");
+});
+
+test("a note that kept its cover does not get a SECOND cover when it is met again", async () => {
+  // The same rule from the other side: the cover is a yield like any other, so a note
+  // settled as "keep the cover" is settled. Two covers is two relays of one item — harmless
+  // to the archive, dishonest in the counters, and evidence the ledger is not being kept.
+  const video = coverItem(VIDEO_ROW);
+  const { expander } = scripted();
+
+  assert.deepEqual(ids((await expander.attemptNote(video)).items), [video.sourceId]);
+  assert.deepEqual((await expander.attemptNote(video)).items, []);
+  assert.equal(expander.stats().refused, 1, "the repeat was counted as a second refusal");
+});
+
+test("conceding a note TWICE yields one cover and counts one unreachable", async () => {
+  const cover = coverItem(NORMAL_ROW);
+  const { expander } = scripted({ open: () => false });
+
+  assert.deepEqual(ids(expander.retireNote(cover).items), [cover.sourceId]);
+  assert.deepEqual(expander.retireNote(cover).items, []);
+  assert.equal(expander.stats().unreachable, 1);
+});
+
+test("a note the expansion THREW over keeps its cover and is a degradation, not an unmounted card", async () => {
+  // 495's distinction, applied to the third way an ask can end: a page driver that blew up
+  // is a note that WAS reached and did not answer. Filing it under `unreachable` would tell
+  // the user "the board only renders what is on screen" about a note whose card was there.
+  const cover = coverItem(NORMAL_ROW);
+  const { expander } = scripted();
+  const boom = new Error("detached document");
+
+  const verdict = expander.failNote(cover, boom);
+
+  assert.deepEqual(ids(verdict.items), [cover.sourceId]);
+  const stats = expander.stats();
+  assert.equal(stats.degraded, 1);
+  assert.equal(stats.unreachable, 0);
+  assert.equal(stats.reasons.expand_failed, 1);
+  assert.equal(stats.partial, true);
+  assert.deepEqual(expander.failNote(cover, boom).items, [], "a failed note was settled twice");
+});
+
 // MARK: - the live page driver (browser glue)
 
 /**
@@ -1025,6 +1181,47 @@ test("the item's xsec_token is NEVER interpolated into a selector — only the g
     assert.equal(selector.includes(hostile), false);
     assert.equal(selector.includes("xsec_token"), false);
   }
+});
+
+test("the page driver's canOpen answers the same lookup as the open, not a cheaper guess", async () => {
+  // The streaming pass asks this BEFORE it pays a pacing gap (098 2A), so an answer that
+  // disagreed with `openNote` would either skip notes that could have been opened or charge
+  // ~2.4 s for notes that could not — per note, per scroll round. It is therefore the same
+  // `findLink`, asserted against the open itself rather than described.
+  const { win, state, log } = fakeWindow({ links: LIVE_ANCHORS });
+  const driver = createPageNoteDriver({ win, log, sleep: async () => {} });
+
+  assert.equal(driver.canOpen(noteItem(LIVE_NOTE_ID)), true);
+  assert.equal(driver.canOpen(noteItem("6a00000000000000000000ff")), false,
+    "the driver claimed a card for a note the board never rendered");
+  assert.deepEqual(state.clicks, [], "asking whether a card is there must not click it");
+  // The two agree: whatever `canOpen` admits, the open opens — and whatever it refuses, the
+  // open refuses too.
+  assert.equal(await driver.openNote(noteItem(LIVE_NOTE_ID)), true);
+  assert.equal(await driver.openNote(noteItem("6a00000000000000000000ff")), false);
+});
+
+test("canOpen refuses a note with no id, and an id that is not id-shaped, without a selector", async () => {
+  // The same guard `openNote` has, on the same reason: only the note id is ever
+  // interpolated into a selector, and only after it has been proved id-shaped.
+  const { win, state, log } = fakeWindow({ links: LIVE_ANCHORS });
+  const driver = createPageNoteDriver({ win, log, sleep: async () => {} });
+
+  assert.equal(driver.canOpen({ sourceId: null, provenance: { rawMetadata: {} } }), false);
+  assert.equal(driver.canOpen(noteItem('x"],a[href*="')), false, "a crafted id reached the selector engine");
+  assert.deepEqual(state.selectors, [], "a selector was built from an id that was never checked");
+});
+
+test("canOpen never throws into the sweep — a page that cannot be queried simply has no card", async () => {
+  const logs = [];
+  const driver = createPageNoteDriver({
+    win: { document: { querySelectorAll: () => { throw new Error("detached document"); } } },
+    log: (...args) => logs.push(args.join(" ")),
+    sleep: async () => {},
+  });
+
+  assert.equal(driver.canOpen(noteItem(LIVE_NOTE_ID)), false);
+  assert.ok(logs.some((line) => /looking up the note card threw/.test(line)));
 });
 
 test("the page driver reports FALSE when the note's card is not on the page", async () => {
@@ -1266,4 +1463,73 @@ test("the feed reset never throws into the sweep, whatever the page does", async
   assert.equal(await createPageFeedResetter({ win: hostile, sleep: async () => {} })(), false);
   assert.equal(await createPageFeedResetter({ win: {}, sleep: async () => {} })(), false);
   assert.equal(await createPageFeedResetter({ win: null, sleep: async () => {} })(), false);
+});
+
+// MARK: - the live STEP scroller (098 2A, changelog 497)
+//
+// The board grid is virtualised, so a note can only be opened while its card is mounted, and
+// the sweep's own paging scroll is one JUMP to the foot of the document — past three
+// screenfuls of cards, mounting none of them. This is the same journey taken in stages, used
+// ONLY while notes are being opened: the cover pass still jumps, which is the pass that was
+// verified live against a real 116-note board.
+
+/** A scrollable page: `height` of document, `viewport` tall, currently at `scrollY`. */
+function scrollableWindow({ height = 10000, viewport = 1000, scrollY = 0, body = true } = {}) {
+  const state = { scrolled: [], log: [] };
+  const win = {
+    innerHeight: viewport,
+    scrollY,
+    scrollTo: (x, y) => { state.scrolled.push(y); win.scrollY = Math.min(y, Math.max(0, height - viewport)); },
+    document: body ? { body: { scrollHeight: height } } : null,
+  };
+  return { win, state, log: (...args) => state.log.push(args.join(" ")) };
+}
+
+test("the step scroller walks DOWN by less than a screen, so no band of cards is jumped over", async () => {
+  // Under a full viewport on purpose: a full-screen step would put the new band exactly
+  // where the old one was and could skip a row between two mounts. The assertion is the
+  // PROPERTY — forward, and short of a screen — not the ratio, which is a tuning number.
+  const { win, state, log } = scrollableWindow({ height: 10000, viewport: 1000, scrollY: 0 });
+  const step = createPageStepScroller({ win, log });
+
+  assert.equal(step(), true, "the page had 9000px of room and the walk reported no movement");
+  const [first] = state.scrolled;
+  assert.ok(first > 0, "the viewport did not move");
+  assert.ok(first < 1000, "a step of a whole viewport can leave a band of cards unmounted");
+  assert.equal(step(), true);
+  assert.ok(state.scrolled[1] > first, "the second step did not advance on the first");
+});
+
+test("the walk stops at the FOOT and says so — that is the pass's evidence it has passed every card", async () => {
+  const { win, state, log } = scrollableWindow({ height: 2000, viewport: 1000, scrollY: 1000 });
+  const step = createPageStepScroller({ win, log });
+
+  assert.equal(step(), false, "the pass would keep walking a page it had already walked off the end of");
+  // …and it still nudges the bottom, because that gesture is what the infinite scroll
+  // listens for and the next page has to keep arriving.
+  assert.deepEqual(state.scrolled, [2000]);
+});
+
+test("the last step lands exactly at the foot rather than overshooting past it", async () => {
+  const { win, state, log } = scrollableWindow({ height: 1500, viewport: 1000, scrollY: 400 });
+  const step = createPageStepScroller({ win, log });
+
+  assert.equal(step(), true);
+  assert.deepEqual(state.scrolled, [500], "the walk asked for a position the page does not have");
+  assert.equal(step(), false, "…and the next step knows it has arrived");
+});
+
+test("the walk never throws into the sweep — a page it cannot measure simply stops", async () => {
+  // Every driver in this file is guarded the same way: a page that will not be driven is a
+  // degradation the caller reports (the rest of the page keeps its covers), never an
+  // exception into a sweep that would then halt on a scroll.
+  const broken = {
+    get document() { throw new Error("detached document"); },
+  };
+  const logs = [];
+  assert.equal(createPageStepScroller({ win: broken, log: (...a) => logs.push(a.join(" ")) })(), false);
+  assert.ok(logs.some((line) => /stepping the board scroll threw/.test(line)));
+
+  const { win, log } = scrollableWindow({ body: false });
+  assert.equal(createPageStepScroller({ win, log })(), false, "a page with no body is a page with no walk");
 });

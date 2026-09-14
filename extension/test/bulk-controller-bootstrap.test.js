@@ -14,12 +14,13 @@ import assert from "node:assert/strict";
 import { registerBulkController } from "../src/bulk-controller.js";
 import {
   BULK, START, buildStartMessage, TIMELINE_MESSAGE_SOURCE as MSG_SRC,
+  REDNOTE_FEED_MESSAGE_SOURCE as REDNOTE_FEED_SRC,
 } from "../src/bulk-messages.js";
 
 /** A fake `chromeApi`: records added listeners + sent messages, answers the bulk
  * protocol, and backs storage with a plain object. `openReply` overrides the open
  * answer so a test can inject a transport error (an `{ __error }` envelope). */
-function fakeChromeApi({ openReply = { jobId: "JOB-1", caps: null }, boardFeed } = {}) {
+function fakeChromeApi({ openReply = { jobId: "JOB-1", caps: null }, boardFeed, known = [] } = {}) {
   const listeners = [];
   const store = {};
   const sent = [];
@@ -31,7 +32,7 @@ function fakeChromeApi({ openReply = { jobId: "JOB-1", caps: null }, boardFeed }
         sent.push(message);
         switch (message.type) {
           case BULK.open: return openReply;
-          case BULK.known: return [];
+          case BULK.known: return known;
           case BULK.relay: return { status: "saved", deduplicated: false };
           case BULK.complete: return true;
           default: return null;
@@ -228,4 +229,137 @@ test("registerBulkController: the X message listener is torn down when the sweep
   assert.equal(reply.result.status, "complete");
   assert.equal(listeners.length, 0, "the message listener is removed on settle — no per-launch leak");
   assert.equal(win.__atelierSweepInFlight, false);
+});
+
+// MARK: - the rednote driver's own wiring (098 2A, changelog 497)
+//
+// `buildRednoteDriver` is where expansion is actually plugged in, and since 2A what it
+// plugs in changed shape: the source is handed the EXPANDER (it drives `attemptNote` /
+// `retireNote` per note) and a STEP SCROLLER that walks the virtualised grid, instead of one
+// page-at-a-time `expandItems`. Nothing else reaches that wiring — every other test of the
+// expansion pass builds its own source — so a mis-wire here would be invisible until a live
+// sweep, which is how this feature's defects have been found so far.
+
+/**
+ * A fake rednote board page. The board's own feed response is delivered through the MAIN-
+ * world hook's message envelope, exactly as `rednote-hook.js` posts it. The document renders
+ * the board's profile anchor but NO note card, which is the live grid's ordinary state for a
+ * note that is not on screen — so the pass concedes the note rather than opening it, and the
+ * test costs no paced note-open.
+ */
+function fakeRednoteWin({ noteId, boardId }) {
+  const listeners = [];
+  const state = { scrolled: [], listeners };
+  const anchors = [`/user/profile/65d3e54f000000000503359d`];
+  const feedPage = {
+    code: 0,
+    success: true,
+    msg: "成功",
+    data: {
+      has_more: false,
+      cursor: "",
+      notes: [{
+        note_id: noteId,
+        type: "normal",
+        display_title: "t",
+        xsec_token: "AB40tok",
+        user: { user_id: "u1", nickname: "n" },
+        cover: {
+          file_id: "fid",
+          url: "",
+          url_pre: "http://sns-webpic-qc.xhscdn.com/2026/fid!nc_n_webp_mw_1",
+          url_default: "http://sns-webpic-qc.xhscdn.com/2026/fid!nc_n_webp_mw_1",
+          info_list: [{ image_scene: "WB_DFT", url: "http://sns-webpic-qc.xhscdn.com/2026/fid!nc_n_webp_mw_1" }],
+          width: 100,
+          height: 100,
+        },
+      }],
+    },
+  };
+  const feedUrl = `//webapi.rednote.com/api/sns/web/v1/board/note`
+    + `?board_id=${boardId}&num=30&cursor=&image_formats=jpg,webp,avif`;
+  const win = {
+    location: { host: "www.rednote.com", origin: "https://www.rednote.com", pathname: `/board/${boardId}` },
+    // Shorter than the viewport, so the walk is at the foot of the document on its first
+    // look and the pass concedes in one round instead of waiting out its settle twelve times.
+    innerHeight: 1000,
+    scrollY: 0,
+    document: {
+      body: { scrollHeight: 800 },
+      querySelectorAll: (selector) => {
+        const needle = /a\[href\*="([^"]*)"\]/.exec(selector);
+        return anchors
+          .filter((href) => needle && needle[1] && href.includes(needle[1]))
+          .map((href) => ({ getAttribute: () => href, click() {}, scrollIntoView() {} }));
+      },
+      dispatchEvent: () => true,
+    },
+    history: { back() {}, scrollRestoration: "auto" },
+    KeyboardEvent: function KeyboardEvent() {},
+    scrollTo: (x, y) => state.scrolled.push(y),
+    addEventListener: (type, fn) => listeners.push({ type, fn }),
+    removeEventListener: (type, fn) => {
+      const index = listeners.findIndex((l) => l.type === type && l.fn === fn);
+      if (index >= 0) listeners.splice(index, 1);
+    },
+    // The hook's replay: it re-posts what the board fetched before the sweep attached,
+    // which for a board the user just opened is the opening slice.
+    postMessage: () => {
+      for (const listener of listeners.filter((l) => l.type === "message")) {
+        listener.fn({ source: win, data: { source: REDNOTE_FEED_SRC, json: feedPage, url: feedUrl } });
+      }
+    },
+  };
+  return { win, state, noteId };
+}
+
+test("registerBulkController: an expansion sweep wires the EXPANDER and the walk, not a page hook", async () => {
+  const boardId = "69322476000000001202811f";
+  const noteId = "6a9f696e000000000d020daa";
+  // The note is already in the library, so the engine SKIPS the relay (no pace, no relay):
+  // this test is about the driver's wiring, and a real relay would cost the engine's full
+  // pacing gap for nothing this test asks about.
+  const chromeApi = fakeChromeApi({ known: [noteId] });
+  const { win, state } = fakeRednoteWin({ noteId, boardId });
+  registerBulkController(win, chromeApi);
+
+  const { reply } = await dispatch(chromeApi, buildStartMessage({
+    platform: "rednote", input: { boardId }, scope: `board:${boardId}`, expandNotes: true,
+  }));
+
+  await new Promise((resolve) => { setTimeout(resolve, 0); });   // let the .finally dispose() run
+
+  assert.equal(reply.ok, true, `the sweep failed: ${reply.error}`);
+  assert.equal(reply.result.status, "complete", `the sweep halted: ${reply.result.error}`);
+  // The expander is wired: a cover-only sweep reports `expansion: null`, and one wired to
+  // the old page-at-a-time hook would never have driven `attemptNote` at all.
+  const expansion = reply.result.expansion;
+  assert.ok(expansion, "an expansion sweep reported no expansion stats — the expander is not wired");
+  assert.equal(expansion.mode, "expansion");
+  assert.equal(expansion.attempted, 1, "the board's one note was never put to the expander");
+  assert.equal(expansion.unreachable, 1, "a note with no card on the page was not conceded");
+  assert.equal(expansion.opened, 0, "a note with no card was clicked anyway");
+  // …and the walk is wired: the pass asked the page to step, found itself already at the
+  // foot of a document shorter than the viewport, and nudged the paging scroll.
+  assert.ok(state.scrolled.length > 0, "the board was never scrolled at all");
+  assert.equal(state.listeners.length, 0, "the message listener leaked past the sweep");
+});
+
+test("registerBulkController: a COVER sweep of the same board opens nothing and reports no expansion", async () => {
+  // The other half of the toggle, through the same wiring: with `expandNotes` off the
+  // driver builds no expander, no note driver and no walk — the pass verified live against
+  // a real 116-note board, untouched by any of 2A.
+  const boardId = "69322476000000001202811f";
+  const noteId = "6a9f696e000000000d020daa";
+  const chromeApi = fakeChromeApi({ known: [noteId] });
+  const { win } = fakeRednoteWin({ noteId, boardId });
+  registerBulkController(win, chromeApi);
+
+  const { reply } = await dispatch(chromeApi, buildStartMessage({
+    platform: "rednote", input: { boardId }, scope: `board:${boardId}`,
+  }));
+
+  assert.equal(reply.ok, true);
+  assert.equal(reply.result.status, "complete");
+  assert.equal(reply.result.expansion, null, "a cover sweep reported expansion stats");
 });

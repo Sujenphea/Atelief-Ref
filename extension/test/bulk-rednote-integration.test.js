@@ -528,6 +528,18 @@ test("rednote integration: a RESUMED sweep is held to the same rule, for the sam
 // WHEN the reset runs, WHAT the sweep does with what it had before it, and — above all —
 // that a reset which did not work falls into 1A's refusal rather than around it.
 
+/** An expander-shaped probe: it answers every note with its own cover and records that it
+ * ran. Enough to prove WHEN expansion happens relative to the reset, which is all the two
+ * tests below ask — and shaped as the real expander's per-note seam, so it cannot pass by
+ * being wired to something the source no longer calls. */
+function probeExpander(onAttempt) {
+  return {
+    attemptNote: async (item) => { onAttempt(item); return { settled: true, items: [item] }; },
+    retireNote: (item) => ({ settled: true, items: [item] }),
+    failNote: (item) => ({ settled: true, items: [item] }),
+  };
+}
+
 /** A board source whose reset is scripted. `onReset` stands in for the page: whatever it
  * pushes into the source is what the SPA refetched. Returns `false` to model a page that
  * could not be driven at all. `state.resets` counts the attempts. */
@@ -781,7 +793,7 @@ test("rednote integration: the reset happens BEFORE the first note is opened", a
   const { source } = resettableBoard(
     [[pageB, feedUrl(PAGE1.data.cursor)]],
     (src) => { order.push("reset"); src.onResponse(PAGE1, feedUrl()); },
-    { expandItems: async (items) => { order.push("expand"); return items; } },
+    { expander: probeExpander(() => order.push("expand")) },
   );
   source.onResponse(pageB, feedUrl(CURSOR_A));
 
@@ -801,7 +813,7 @@ test("rednote integration: a refused sweep opens NO notes at all", async () => {
   const { source } = resettableBoard(
     [[lastPage(), feedUrl(pageB.data.cursor)]],
     () => { order.push("reset"); },                  // driven, and the board does not answer
-    { expandItems: async (items) => { order.push("expand"); return items; } },
+    { expander: probeExpander(() => order.push("expand")) },
   );
   source.onResponse(pageB, feedUrl(CURSOR_A));
 
@@ -967,9 +979,18 @@ const imageIdsOf = (noteId) =>
  * A rednote source with expansion ON: `pages` drive the board scroll exactly as above, and
  * `answer(noteId)` decides what the page returns when that note is opened (a body, or null
  * for a note that never answers).
+ *
+ * `mounted` is the VIRTUALISED grid (098 2A): the set of note ids whose card is in the DOM
+ * right now. By default every card is mounted, which is the pre-2A world these tests were
+ * written in and keeps them asking what they were written to ask. A test that wants the
+ * real board passes a `mounted` that changes as `scrollStep` walks down the page.
  */
-function expandingSource(pages = [], { answer = (noteId) => detailFor(noteId), armed = null, ...overrides } = {}) {
-  const state = { scrolls: 0, opened: [], closed: 0, sleeps: 0 };
+function expandingSource(pages = [], {
+  answer = (noteId) => detailFor(noteId), armed = null, mounted = null, scrollStep = null,
+  maxReachRounds, reachSettleMs = 0, onExpandFailure = null, onOpen = null, onScroll = null,
+  ...overrides
+} = {}) {
+  const state = { scrolls: 0, steps: 0, opened: [], closed: 0, sleeps: 0 };
   const waiter = createNoteDetailWaiter();
   const expander = createNoteExpander({
     waiter,
@@ -977,13 +998,16 @@ function expandingSource(pages = [], { answer = (noteId) => detailFor(noteId), a
     random: () => 0,
     // A fake `sleep` that always resolves turns an UNBOUNDED wait for a note's response
     // into a HANG rather than a failure, and a hanging suite reports nothing at all.
-    sleep: async () => { if ((state.sleeps += 1) > 50) throw new Error("the note-open wait never gave up"); },
+    sleep: async () => { if ((state.sleeps += 1) > 200) throw new Error("the note-open wait never gave up"); },
     pacingMs: 0,
     pacingJitterMs: 0,
     timeoutMs: 0,
+    canOpen: mounted ? (item) => mounted().includes(noteIdOf(item)) : null,
     openNote: async (item) => {
       const noteId = noteIdOf(item);
+      if (mounted && !mounted().includes(noteId)) return false;
       state.opened.push(noteId);
+      if (onOpen) onOpen(noteId);
       const body = answer(noteId);
       if (body) waiter.onDetail(body, `https://webapi.rednote.com/api/sns/web/v1/feed`);
       return true;
@@ -1001,13 +1025,18 @@ function expandingSource(pages = [], { answer = (noteId) => detailFor(noteId), a
     maxIdleRounds: 3,
     scroll: () => {
       state.scrolls += 1;
+      if (onScroll) onScroll();
       if (next < pages.length) {
         const [json, url] = pages[next];
         next += 1;
         source.onResponse(json, url);
       }
     },
-    expandItems: expander.expandItems,
+    expander,
+    scrollStep: scrollStep ? () => { state.steps += 1; return scrollStep(state.steps); } : null,
+    maxReachRounds,
+    reachSettleMs,
+    onExpandFailure,
     isFatalExpandFailure: isRednoteChallenge,
   });
   return { source, expander, state };
@@ -1132,11 +1161,28 @@ test("rednote expansion: a refused NOTE-OPEN halts the sweep resumable, like a r
 
   assert.equal(result.status, "halted", "a refused note-open degraded to the cover instead of halting");
   assert.match(result.error, /rednote refused the feed/);
-  assert.deepEqual(recorder.ids(), [], "the refused page's items are not drained against a flagged account");
   assert.equal(state.closed, 1, "the board was given back even as the sweep halted");
   for (const id of idsOf(unreached)) {
     assert.equal(recorder.ids().includes(id), false, "the sweep kept paging after the refusal");
   }
+  // WHAT CHANGED WITH STREAMING, pinned deliberately (changelog 497). Before 2A a whole
+  // page was expanded and then yielded, so a refusal partway through discarded the notes
+  // ahead of it and this asserted NOTHING was relayed. A streaming pass has already
+  // relayed them — which is the same trade the board feed's own fatal route makes one
+  // level up ("what arrived before the refusal is kept"), and the safety property is
+  // untouched: what must never happen is a relay AFTER the refusal, and the notes here
+  // were settled before rednote said no. Refusing to yield them would mean holding a whole
+  // page back to preserve the option of discarding it, which is exactly the 3B block being
+  // removed. So: the refused note and everything behind it are absent, the video note
+  // ahead of it — settled without an open, before any refusal existed — is kept.
+  const refusedAt = PAGE1.data.notes.findIndex((row) => row.type !== "video");
+  const settledFirst = PAGE1.data.notes.slice(0, refusedAt).map((row) => row.note_id);
+  assert.deepEqual(recorder.ids(), settledFirst, "a note settled after the refusal was still relayed");
+  for (const row of PAGE1.data.notes.slice(refusedAt)) {
+    assert.equal(recorder.ids().includes(row.note_id), false,
+      `the refusal did not stop the pass — ${row.note_id} was relayed anyway`);
+  }
+  assert.equal(state.opened.length, 1, "the pass kept opening notes against a flagged session");
 });
 
 test("rednote expansion: a note that never answers keeps its cover and the sweep still completes", async () => {
@@ -1222,4 +1268,375 @@ test("rednote expansion: an armed re-sweep still opens a note that only ever gav
   assert.deepEqual(recorder.ids(), imageRows.flatMap((note) => imageIdsOf(note.note_id)));
   assert.equal(expander.stats().skippedKnown, 0);
   assert.ok(result.counts.ingested > 0, "the expansion toggle silently did nothing on an already-swept board");
+});
+
+// MARK: - 2A + 3B: expansion rides the scroll (changelog 497)
+//
+// Two defects with one cause, both measured on a live 116-note board.
+//
+// 2A. The grid is VIRTUALISED — 13 mounted note cards against a feed page of 37-38 — and a
+// note can only be opened by clicking a card that exists. Expansion used to run over a whole
+// page AFTER it arrived, by which time the grid had scrolled on, so 103 of 116 notes
+// reported "no card on the page" and kept their covers.
+//
+// 3B. Nothing was yielded until the whole page had been expanded, which at ~2.4 s of pacing
+// plus up to 8 s of waiting per note is two to five minutes before anything saves.
+//
+// The pass now works a page's notes in feed order, opens the ones whose cards are mounted,
+// yields each note the moment it is answered, steps the viewport down and asks the rest
+// again — conceding a note to its cover only once it has walked the whole page.
+//
+// Everything below drives the REAL parser, the REAL seam, the REAL expander and the REAL
+// engine; only the page is faked, and it is faked as a virtualised grid rather than as a
+// document where every card is always there, because the second is the world in which this
+// defect did not exist.
+
+/** Image rows from the live capture, re-addressed so a test can have as many as it needs. */
+const LIVE_IMAGE_ROWS = LIVE.data.notes.filter((note) => note.type !== "video");
+const imageRows = (count, prefix = "note") => Array.from({ length: count }, (_, index) => {
+  const row = clone(LIVE_IMAGE_ROWS[index % LIVE_IMAGE_ROWS.length]);
+  row.note_id = `${prefix}-${index}`;
+  return row;
+});
+
+/**
+ * A VIRTUALISED grid, modelled on the live measurement: `band` cards are in the DOM at a
+ * time and the rest are not rendered at all. `step()` slides the band down and reports
+ * whether it moved — false means the viewport is at the foot of the document, which is the
+ * pass's evidence that it has now been past every card of this page. A new page puts the
+ * band back at the head, which is where the viewport sits when the board appends one.
+ */
+function virtualGrid(pagesOfIds, { band = 3 } = {}) {
+  let pageIndex = 0;
+  let top = 0;
+  const current = () => pagesOfIds[Math.min(pageIndex, pagesOfIds.length - 1)] || [];
+  return {
+    mounted: () => current().slice(top, top + band),
+    step: () => {
+      if (top + band >= current().length) return false;
+      top += band;
+      return true;
+    },
+    nextPage: () => { pageIndex += 1; top = 0; },
+  };
+}
+
+test("rednote 2A: a virtualised board expands EVERY note — the pass walks down to the cards", async () => {
+  // Nine notes, three cards mounted at a time: the shape of the live board, in miniature.
+  // Before this the pass met all nine at once, found three, and wrote off the other six.
+  const rows = imageRows(9);
+  const page = feed(rows, { hasMore: false });
+  const grid = virtualGrid([rows.map((row) => row.note_id)], { band: 3 });
+  const { source, expander, state } = expandingSource([], {
+    mounted: grid.mounted, scrollStep: () => grid.step(),
+  });
+  source.onResponse(page, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  assert.deepEqual(recorder.ids(), rows.flatMap((row) => imageIdsOf(row.note_id)),
+    "the board did not expand whole, or it expanded out of feed order");
+  assert.deepEqual(state.opened, rows.map((row) => row.note_id), "every note was opened, once, in order");
+  const stats = expander.stats();
+  assert.equal(stats.expanded, rows.length);
+  assert.equal(stats.attempted, rows.length, "one note asked over several rounds is still one note");
+  assert.equal(stats.unreachable, 0, "a note the walk reached was still reported as having no card");
+  assert.equal(stats.partial, false, "a board that expanded whole reported a shortfall");
+  assert.ok(state.steps > 0, "the walk never stepped — this passed without the thing it tests");
+});
+
+test("rednote 2A: without the walk, only the mounted band is reached — and the rest keep covers, once", async () => {
+  // The control, and the defect itself. The same board with no way to walk down to the
+  // cards reaches exactly the band that happened to be mounted; the notes it never reached
+  // fall back to the cover the board pass captured — exactly one item each, never a cover
+  // AND children — and the sweep says so rather than reporting a clean expansion.
+  const rows = imageRows(9);
+  const page = feed(rows, { hasMore: false });
+  const grid = virtualGrid([rows.map((row) => row.note_id)], { band: 3 });
+  const { source, expander, state } = expandingSource([], { mounted: grid.mounted });   // no scrollStep
+  source.onResponse(page, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete", "the feed ending with notes still pending was not a clean finish");
+  const reached = rows.slice(0, 3);
+  const missed = rows.slice(3);
+  assert.deepEqual(recorder.ids(), [
+    ...reached.flatMap((row) => imageIdsOf(row.note_id)),
+    ...missed.map((row) => row.note_id),
+  ], "the notes the pass never reached did not fall back to exactly their covers");
+  assert.deepEqual(state.opened, reached.map((row) => row.note_id));
+  assert.equal(new Set(recorder.ids()).size, recorder.ids().length, "something was relayed twice");
+  const stats = expander.stats();
+  assert.equal(stats.expanded, reached.length);
+  assert.equal(stats.unreachable, missed.length, "the shortfall is the notes with no card, and it is named");
+  assert.equal(stats.reasons.no_note_card, missed.length, "a miss was counted per ROUND rather than per note");
+  assert.equal(stats.partial, true);
+});
+
+test("rednote 3B: the first note SAVES before the last one is opened", async () => {
+  // The block this removes. Before, a page's items were yielded only after `expandItems`
+  // had returned, so a 37-note page opened every note — minutes of paced SPA clicks — before
+  // a single item reached the app, and a sweep interrupted in that window saved nothing at
+  // all. Now each note is yielded as it is answered, which is visible as INTERLEAVING:
+  // relays appear among the opens rather than all behind them.
+  const rows = imageRows(4);
+  const page = feed(rows, { hasMore: false });
+  const order = [];
+  const { source } = expandingSource([], { onOpen: (noteId) => order.push(`open:${noteId}`) });
+  source.onResponse(page, feedUrl());
+
+  const result = await runSweep(source, { boardId: BOARD_ID }, {
+    ...engineOpts,
+    relay: async (item) => { order.push(`relay:${item.sourceId}`); return { outcome: OUTCOMES.ingested }; },
+  });
+
+  assert.equal(result.status, "complete");
+  const firstRelay = order.findIndex((event) => event.startsWith("relay:"));
+  assert.ok(firstRelay >= 0, "nothing was relayed at all");
+  assert.ok(order.indexOf(`open:${rows[1].note_id}`) > firstRelay,
+    "the whole page was expanded before anything saved — 3B, unchanged");
+  assert.ok(order.slice(firstRelay).some((event) => event.startsWith("open:")),
+    "no note was opened after the first save, so nothing was actually interleaved");
+  // …and the first thing saved is the FIRST note's first image, not something out of order.
+  assert.equal(order[firstRelay], `relay:${imageIdsOf(rows[0].note_id)[0]}`);
+});
+
+test("rednote 2A: a note whose card never mounts anywhere keeps its cover exactly once", async () => {
+  // The honest miss: a short board, or a card the SPA renders in a shape `findLink` cannot
+  // see. The walk runs its full course and the note is conceded — one cover, one
+  // `unreachable`, one `no_note_card`, however many times the pass asked about it.
+  const rows = imageRows(4);
+  const ghost = rows[2].note_id;
+  const page = feed(rows, { hasMore: false });
+  const grid = virtualGrid([rows.map((row) => row.note_id)], { band: 2 });
+  const { source, expander, state } = expandingSource([], {
+    mounted: () => grid.mounted().filter((id) => id !== ghost),
+    scrollStep: () => grid.step(),
+  });
+  source.onResponse(page, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  assert.equal(recorder.ids().filter((id) => id === ghost).length, 1, "the missing note's cover was not relayed once");
+  assert.equal(recorder.ids().some((id) => id.startsWith(`${ghost}:`)), false,
+    "a note that was never opened produced children");
+  assert.equal(state.opened.includes(ghost), false);
+  const stats = expander.stats();
+  assert.equal(stats.unreachable, 1);
+  assert.equal(stats.reasons.no_note_card, 1, "the miss was counted once per ASK instead of once per note");
+  assert.equal(stats.expanded, rows.length - 1, "one unreachable note cost the rest of the page");
+});
+
+test("rednote 2A: a note repeated on the NEXT page never gets a cover on top of its images", async () => {
+  // THE trap, and the reason the expander keeps a ledger. Boards shift under a paging sweep
+  // and re-serve a row (observed live). Expanded on page 1 and then met again on page 2 with
+  // its card long gone, the note would be CONCEDED — emitting `<note_id>` beside the
+  // `<note_id>:0…:8` it had already produced. That is one picture ingested under two keys,
+  // with a dedup-skip that cannot see the duplicate: exactly what T5a refused video notes
+  // over and what T6c chose `<note_id>:v` to avoid.
+  const first = imageRows(2, "a");
+  const repeat = clone(first[0]);
+  const second = [repeat, ...imageRows(1, "b")];
+  const page1 = feed(first);
+  const page2 = feed(second, { hasMore: false });
+  // Page 2 mounts only its OWN new row — the repeated card is not rendered again.
+  const grid = virtualGrid([
+    first.map((row) => row.note_id),
+    second.map((row) => row.note_id).filter((id) => id !== repeat.note_id),
+  ], { band: 2 });
+  const { source, expander } = expandingSource([[page2, feedUrl(page1.data.cursor)]], {
+    mounted: grid.mounted, scrollStep: () => grid.step(), onScroll: grid.nextPage,
+  });
+  source.onResponse(page1, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  assert.equal(recorder.ids().includes(repeat.note_id), false,
+    "the repeated note emitted its COVER as well as its images — one picture, two keys");
+  assert.equal(new Set(recorder.ids()).size, recorder.ids().length, "an id was relayed twice");
+  assert.deepEqual(recorder.ids(), [...first, ...second.slice(1)].flatMap((row) => imageIdsOf(row.note_id)));
+  const stats = expander.stats();
+  assert.equal(stats.unreachable, 0, "the repeat was counted as a note the pass could not reach");
+  assert.equal(stats.attempted, 3, "the repeat was counted twice in the coverage denominator");
+  assert.equal(stats.reasons.duplicate, 1, "the repeat is recognised and counted, not silently dropped");
+});
+
+test("rednote 2A: an exhausted budget gives the rest of the board its covers without walking for them", async () => {
+  // R13's rule through the streaming pass. The ceiling is on note-OPENS, and a note past it
+  // needs no card at all — so it is settled on sight, the walk is never spent looking for it,
+  // and the cover pass finishes rather than halting.
+  const rows = imageRows(6);
+  const page = feed(rows, { hasMore: false });
+  const grid = virtualGrid([rows.map((row) => row.note_id)], { band: 2 });
+  const { source, expander, state } = expandingSource([], {
+    budget: 2, mounted: grid.mounted, scrollStep: () => grid.step(),
+  });
+  source.onResponse(page, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete", "the budget is a ceiling on note-opens, not a halt");
+  assert.equal(state.opened.length, 2);
+  assert.deepEqual(recorder.ids(), rows.flatMap((row, index) =>
+    (index < 2 ? imageIdsOf(row.note_id) : [row.note_id])));
+  assert.equal(state.steps, 0, "the walk went looking for cards it had already decided not to click");
+  const stats = expander.stats();
+  assert.equal(stats.budgetExhausted, true);
+  assert.equal(stats.unreachable, 0, "a budget that ran out is not a card that was missing");
+  assert.equal(stats.partial, true);
+});
+
+test("rednote 2A: a page that never mounts anything is bounded — the walk cannot hold a sweep for ever", async () => {
+  // The guard for a page that keeps reporting room to scroll (a lazy grid that renders as
+  // you go, a document growing under us). The honest terminator is reaching the foot; this
+  // is what stops one page walking for ever if the foot never arrives. Hitting it is the
+  // same outcome, reached the same way: the rest of the page keeps its covers.
+  const rows = imageRows(3);
+  const page = feed(rows, { hasMore: false });
+  const { source, expander, state } = expandingSource([], {
+    mounted: () => [],                 // nothing is ever mounted…
+    // …and the page always claims there is further to go. The throw is the test's own
+    // backstop: without the ceiling this walk would never end, and a hanging suite reports
+    // nothing at all — so past a bound the fake page makes the loop fail legibly instead.
+    scrollStep: (step) => {
+      if (step > 10) throw new Error("the walk never stopped stepping");
+      return true;
+    },
+    maxReachRounds: 4,
+  });
+  source.onResponse(page, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  assert.equal(state.steps, 3, "the ceiling of 4 rounds allows 3 steps between them");
+  assert.deepEqual(recorder.ids(), rows.map((row) => row.note_id), "every note kept its cover, once");
+  assert.equal(expander.stats().unreachable, rows.length);
+});
+
+test("rednote 2A: a note the page THREW over degrades by itself — the page around it still expands", async () => {
+  // Fail-open, moved down a level. Before, a throw out of expansion degraded the WHOLE page
+  // to covers (the seam caught it once, per page); now it is the one note's, and 495's
+  // distinction holds — a note that was reached and blew up is `degraded`, not `unreachable`,
+  // because "the board only renders what is on screen" would be a lie about it.
+  const rows = imageRows(3);
+  const page = feed(rows, { hasMore: false });
+  const failures = [];
+  const { source, expander } = expandingSource([], {
+    onExpandFailure: (error, items) => failures.push({ error: String(error), ids: items.map((i) => i.sourceId) }),
+    // The page blows up while this one note is being opened — a detached node, an overlay
+    // that never mounted. The other two open and answer normally.
+    answer: (noteId) => {
+      if (noteId === rows[1].note_id) throw new Error("detached document");
+      return detailFor(noteId);
+    },
+  });
+  source.onResponse(page, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete", "one note's throw halted a sweep it should only have degraded");
+  assert.deepEqual(recorder.ids(), rows.flatMap((row, index) =>
+    (index === 1 ? [row.note_id] : imageIdsOf(row.note_id))),
+  "the throw took the rest of its page down with it");
+  assert.equal(failures.length, 1, "the loss was not reported, or was reported per page");
+  assert.deepEqual(failures[0].ids, [rows[1].note_id], "the report named the whole page instead of the note");
+  const stats = expander.stats();
+  assert.equal(stats.degraded, 1);
+  assert.equal(stats.unreachable, 0, "a note that was reached and threw was filed as having no card");
+  assert.equal(stats.reasons.expand_failed, 1);
+});
+
+test("rednote 2A: a 461 on a note reached only AFTER a step still halts resumable", async () => {
+  // The fatal route through the new loop shape, and not merely on the first note of a page:
+  // a refusal is the same risk-control answer the board feed gives, so degrading past one
+  // keeps opening notes against a session rednote has already flagged. Everything settled
+  // before it is kept — nothing is relayed after it.
+  const rows = imageRows(4);
+  const page = feed(rows, { hasMore: false });
+  const grid = virtualGrid([rows.map((row) => row.note_id)], { band: 1 });
+  const { source, state } = expandingSource([], {
+    mounted: grid.mounted,
+    scrollStep: () => grid.step(),
+    answer: (noteId) => (noteId === rows[1].note_id ? detailRefusal() : detailFor(noteId)),
+  });
+  source.onResponse(page, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "halted", "a refused note-open degraded to the cover instead of halting");
+  assert.match(result.error, /rednote refused the feed/);
+  assert.deepEqual(recorder.ids(), imageIdsOf(rows[0].note_id), "what was settled before the refusal is kept");
+  assert.deepEqual(state.opened, [rows[0].note_id, rows[1].note_id], "the pass kept opening notes after a refusal");
+  assert.equal(state.closed, 2, "the board was given back even as the sweep halted");
+});
+
+test("rednote 2A: the cover-or-children rule holds across a whole mixed sweep, walked", async () => {
+  // The invariant stated over the real thing rather than per case: for every note on the
+  // board, the sweep relays its CHILDREN or its COVER — and a video note's deliberate pair
+  // (the poster, which is a picture the cover pass already keys, plus `<note_id>:v`, which
+  // is a stream) is the one documented exception, never an image-indexed child beside it.
+  const live = feed(LIVE.data.notes, { hasMore: false });
+  const grid = virtualGrid([LIVE.data.notes.map((note) => note.note_id)], { band: 5 });
+  const { source } = expandingSource([], {
+    resolveVideo: true,
+    mounted: grid.mounted,
+    scrollStep: () => grid.step(),
+    answer: (noteId) => (LIVE.data.notes.find((n) => n.note_id === noteId).type === "video"
+      ? videoDetailFor(noteId) : detailFor(noteId)),
+  });
+  source.onResponse(live, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  assert.equal(new Set(recorder.ids()).size, recorder.ids().length, "an id was relayed twice");
+  const relayed = new Set(recorder.ids());
+  for (const row of LIVE.data.notes) {
+    const children = recorder.ids().filter((id) => id.startsWith(`${row.note_id}:`));
+    const hasCover = relayed.has(row.note_id);
+    assert.ok(children.length > 0 || hasCover, `note ${row.note_id} produced nothing at all`);
+    if (row.type === "video") {
+      // T6c's pair, and its bound: the poster rides beside the STREAM and never beside an
+      // image-indexed child, which would be the same picture under two keys.
+      assert.deepEqual(children, [`${row.note_id}:v`], `a video note fanned out as images: ${row.note_id}`);
+      assert.ok(hasCover, `the video note lost its cover still: ${row.note_id}`);
+    } else {
+      assert.equal(hasCover && children.length > 0, false,
+        `note ${row.note_id} relayed its cover AND its images — one picture, two keys`);
+    }
+  }
+});
+
+test("rednote 2A: with expansion OFF the walk is never driven and the cover pass is untouched", async () => {
+  // The pass verified live against a real 116-note board. Nothing in 2A is allowed to reach
+  // it: no expander, so no note is opened, no card is looked for, and the board is paged by
+  // the same single jump to the foot of the document it always was.
+  const page2 = feed(FRESH_ROWS.slice(0, 5), { hasMore: false });
+  let steps = 0;
+  const { source, state } = boardSource([[page2, feedUrl(PAGE1.data.cursor)]], {
+    scrollStep: () => { steps += 1; return true; },
+  });
+  source.onResponse(PAGE1, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  assert.deepEqual(recorder.ids(), [...idsOf(PAGE1), ...idsOf(page2)]);
+  assert.equal(steps, 0, "the cover pass walked the board a screen at a time");
+  assert.equal(state.scrolls, 1, "the cover pass paged differently than it did before 2A");
 });

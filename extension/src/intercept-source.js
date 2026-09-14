@@ -68,6 +68,18 @@ export class SourceStallError extends Error {
  *                           push path must stay synchronous and unwedgeable. A throw
  *                           here degrades to the unexpanded page rather than killing
  *                           the sweep — see X's thread expansion (twitter-detail-client.js).
+ *
+ *                           PAGE-AT-A-TIME, which is the whole of its reach: nothing scrolls
+ *                           while it runs. That is fine for X, whose expansion ASKS for a
+ *                           conversation over the network, and impossible for rednote, whose
+ *                           expansion has to CLICK a card the virtualised grid only mounts
+ *                           when the viewport is near it (098 2A). So rednote pulls `pages()`
+ *                           and does its own per-note pass; this hook, and the two options
+ *                           above it, are X's. They stay described here rather than pared
+ *                           back to today's single caller because they are the contract a
+ *                           page-at-a-time expansion has — and because the fail-open rule
+ *                           they encode is the one thing about expansion that no consumer
+ *                           should ever have to re-derive.
  */
 export function createInterceptSource({
   parsePage,
@@ -103,7 +115,26 @@ export function createInterceptSource({
     if (page) queue.push(page);
   }
 
-  async function* enumerate() {
+  /**
+   * The queue / auto-scroll / stall / fatal loop, one PAGE at a time.
+   *
+   * `enumerate` below is this plus X's per-page `expandItems` and the item-level yield, and
+   * that split is the whole of the extraction: a consumer that needs to do its own work
+   * BETWEEN one page and the next scroll — rednote's streaming note-expansion, which opens
+   * a note while its card is still mounted and therefore has to interleave with the
+   * scrolling (098 2A) — cannot express that through `expandItems`, because nothing scrolls
+   * until `expandItems` has returned.
+   *
+   * So the part that is genuinely common is SHARED rather than copied. It is copying that
+   * would be the defect here: the stall ("a wall is not an end") and the fatal route ("a
+   * challenge halts resumable") are safety decisions, and a second copy of a safety
+   * decision is the one that quietly stops agreeing with the first.
+   *
+   * Nothing about it is platform-specific and nothing about it changed in the extraction:
+   * a page is yielded, the consumer's body runs, and an `endOfFeed` page ends the
+   * generator afterwards — exactly the order the inline loop had.
+   */
+  async function* pages() {
     let idleRounds = 0;
     while (true) {
       if (pendingError) throw pendingError;       // a challenge/fatal arrived via the push channel
@@ -122,6 +153,15 @@ export function createInterceptSource({
       }
       idleRounds = 0;
       const page = queue.shift();
+      yield page;
+      // AFTER the consumer's body has run, so a page that ends the feed still has its items
+      // yielded (and, for rednote, still has its notes expanded) before the generator closes.
+      if (page.endOfFeed) return;                 // exhausted feed → done
+    }
+  }
+
+  async function* enumerate() {
+    for await (const page of pages()) {
       let items = page.items;
       if (expandItems && items.length > 0) {
         try {
@@ -143,7 +183,6 @@ export function createInterceptSource({
         }
       }
       for (const item of items) yield item;
-      if (page.endOfFeed) return;                 // exhausted feed → done
     }
   }
 
@@ -155,5 +194,9 @@ export function createInterceptSource({
   // cursor on every checkpoint that nothing would ever read back — a resume token that
   // looked like a resume token and was not one. Dedup-skip is the real safety net: a
   // resumed sweep re-walks from the top and re-skips what it already has.
-  return { enumerate: () => enumerate(), onResponse, resumable: "scroll" };
+  // `pages` rides out beside `enumerate` for the consumer that must interleave its own work
+  // with the scrolling (rednote, 098 2A/3B). It is the SAME loop `enumerate` runs on, not a
+  // second one: everything below the page — expansion, and the item-level yield — is the
+  // caller's from here, and X's is `enumerate`, unchanged.
+  return { enumerate: () => enumerate(), pages: () => pages(), onResponse, resumable: "scroll" };
 }
