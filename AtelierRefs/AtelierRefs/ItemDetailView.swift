@@ -992,42 +992,42 @@ struct ItemDetailView: View {
             // own view instead of waiting on a blob that will never load.
             switch asset.content {
             case .video:
-                // The poster sits ON TOP of the player until a frame exists, and
-                // "on top" is the whole trick: `AVPlayerView` draws opaque black
-                // from the moment it is installed, so a poster BEHIND it would be
-                // invisible for exactly the window it is there to cover.
+                // The poster stands IN PLACE OF the player until a frame can exist —
+                // it does not cover it. 383 put the poster on top, reasoning that
+                // `AVPlayerView` paints opaque black from the moment it is installed
+                // so a poster BEHIND it would be invisible for exactly the window it
+                // is there to cover. That reasoning is sound, and the arrangement it
+                // produced was still wrong: an opaque poster in a `ZStack` above the
+                // player covers AVKit's transport controls as well as the picture, so
+                // for as long as it is up the controls are unreachable AND unreadable.
+                // `.allowsHitTesting(false)` fixes only half of that — clicks pass
+                // through, the pixels still do not.
                 //
-                // Measured (`VideoOpenProbeTests`, 640×480 synthetic clip):
-                // constructing the player costs 1.1 ms, but the wait from there to
-                // `.readyToPlay` is 92.4 ms — and that 92 ms was a spinner and then
-                // black, while the 1280 poster sat DECODED in `previewImage`,
-                // fetched by `DetailSession` for every kind including this one.
-                // Drawing it costs nothing that was not already paid; a real
-                // 1080p file only widens the gap, since the wait grows and the
-                // construction does not.
-                ZStack {
-                    if let player {
-                        VideoPlayer(player: player)
-                    }
-                    if !videoReady {
-                        Group {
-                            if let image = mediaImage {
-                                image.resizable().scaledToFit()
-                            } else {
-                                // No poster on disk (an older ingest, a reaped tier):
-                                // the spinner is still the honest answer there.
-                                ProgressView()
-                            }
-                        }
-                        // Decoration, exactly as `fanPile` is — and scoped to the poster,
-                        // NOT to the `ZStack`, which would take the player's clicks with
-                        // it. The poster is opaque and sits over `AVPlayerView`'s own
-                        // transport controls, so while it is up a click aimed at Play
-                        // lands on a picture instead, which reads as a player that does
-                        // not work (489). The player underneath owns this area's clicks;
-                        // the poster only ever owns its pixels.
-                        .allowsHitTesting(false)
-                    }
+                // Not coexisting is what removes the whole class. There is no z-order
+                // to get right between two views that are never on screen together, and
+                // no control bar to occlude.
+                //
+                // The cost 383 measured is not what it looks like. Of the 92.4 ms it
+                // clocked (`VideoOpenProbeTests`, 640×480), 1.1 ms is CONSTRUCTING the
+                // player; the rest is the wait to `.readyToPlay`, which `loadMedia`
+                // still starts immediately and still spends behind the poster. Deferring
+                // construction moves 1.1 ms, not 92. The player loads whether or not a
+                // view is showing it — an `AVPlayerItem` reaches `.readyToPlay` from its
+                // `AVPlayer`, not from its output — which is why the gate still works
+                // with nothing installed to draw into.
+                //
+                // What is genuinely given up: the black frame AVKit paints between being
+                // installed and drawing its first frame is no longer hidden by anything.
+                // That window is the price of the swap, and it is paid once, after the
+                // ~300 ms the poster was already covering.
+                if let player, videoReady {
+                    VideoPlayer(player: player)
+                } else if let image = mediaImage {
+                    image.resizable().scaledToFit()
+                } else {
+                    // No poster on disk (an older ingest, a reaped tier): the spinner
+                    // is still the honest answer there.
+                    ProgressView()
                 }
             case .image:
                 // Show the placeholder preview instantly, then swap to the

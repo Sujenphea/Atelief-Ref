@@ -123,4 +123,65 @@ struct VideoPosterGateTests {
         // would end the iteration for a reason that is not the one under test.
         held.continuation.finish()
     }
+
+    // MARK: - The no-drop property (490)
+
+    // This is the property the shipped bug actually violated, and it lived one layer
+    // below everything above. The gate was correct; its SOURCE was not.
+    //
+    // `item.publisher(for: \.status).values` is a Combine `AsyncPublisher`, which
+    // requests one value at a time and buffers NOTHING — a value published while no
+    // `next()` is pending is discarded. KVO for `status` fires on a background thread,
+    // and `status` transitions exactly once (`.unknown` → `.readyToPlay`), so losing
+    // that single delivery means the wait never ends. Measured in the release build:
+    // `entered`, `status 0`, then silence until the 3s backstop, while the video
+    // played underneath.
+    //
+    // `ItemDetailView.statusStream(for:)` replaces it with an `AsyncStream` at
+    // `.bufferingNewest(1)`. These two tests pin what that buys, without needing a
+    // real `AVPlayerItem`: a status produced while the consumer is NOT at `next()`
+    // must still reach the gate.
+
+    /// Both statuses are produced before the gate ever consumes one — the widest
+    /// possible version of "nobody was awaiting when this was published". An unbuffered
+    /// source drops both and the gate waits forever; a buffered one keeps the newest,
+    /// which is the only one that carries information.
+    @Test("a status produced before the gate consumes anything is not dropped")
+    func statusYieldedBeforeConsumptionSurvives() async {
+        let counter = LiftCounter()
+        let held = AsyncStream<AVPlayerItem.Status>.makeStream(
+            bufferingPolicy: .bufferingNewest(1))
+        held.continuation.yield(.unknown)
+        held.continuation.yield(.readyToPlay)
+        held.continuation.finish()
+
+        let lift = await VideoPosterGate.firstFrame(
+            statuses: held.stream, lift: counter.lift)
+
+        #expect(lift == .status(.readyToPlay))
+        #expect(counter.count == 1)
+    }
+
+    /// And the shape the real bug took: `.unknown` is consumed, the gate goes back to
+    /// awaiting, and `.readyToPlay` arrives from elsewhere afterwards. The sleep is not
+    /// what makes this pass — buffering covers both orderings, so the test cannot flake
+    /// on timing — it is there to make the gate genuinely be between iterations when
+    /// the second status lands, which is the condition that lost the value in Combine.
+    @Test("a status arriving while the gate is between iterations reaches it")
+    func statusYieldedMidWaitReachesTheGate() async {
+        let counter = LiftCounter()
+        let held = AsyncStream<AVPlayerItem.Status>.makeStream(
+            bufferingPolicy: .bufferingNewest(1))
+        held.continuation.yield(.unknown)
+
+        let task = Task { @MainActor in
+            await VideoPosterGate.firstFrame(statuses: held.stream, lift: counter.lift)
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+        held.continuation.yield(.readyToPlay)
+
+        #expect(await task.value == .status(.readyToPlay))
+        #expect(counter.count == 1)
+        held.continuation.finish()
+    }
 }
