@@ -1588,6 +1588,31 @@ final class IngestionModel: ObservableObject {
     /// actionable exit from the "Failed N" dead-end. Same write as resume.
     func retrySweep(_ id: UUID) { setSweepStatus(id, .open) }
 
+    /// Whether anything in the list can be cleared — a sweep that has FINISHED
+    /// (completed or stopped). Drives the Clear Log button's enabled state, so the
+    /// button is never a no-op the user has to discover by pressing it.
+    var hasFinishedSweeps: Bool {
+        sweeps.contains { $0.job.status == .complete || $0.job.status == .halted }
+    }
+
+    /// Clear every finished sweep from the list. Running and paused sweeps stay —
+    /// they're live work, and a paused sweep that can't be seen can't be resumed.
+    ///
+    /// Nothing is deleted: the ledger rows survive so a later sweep still skips
+    /// re-downloading everything these ones landed (P14). Clearing the list costs
+    /// the user nothing but the history.
+    func clearSweepLog() {
+        guard let services else { return }
+        Task {
+            do {
+                try await services.clearFinishedJobs()
+                await refreshSweeps()
+            } catch {
+                lastError = Self.message(for: error)
+            }
+        }
+    }
+
     /// The failed items of a sweep (retryable + permanent), newest change first, for
     /// the row's expandable failure list. Empty on error / no failures.
     func sweepFailures(jobID: UUID) async -> [JobItem] {

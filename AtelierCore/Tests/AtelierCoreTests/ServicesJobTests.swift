@@ -260,6 +260,70 @@ struct ServicesJobTests {
         #expect(try await services.jobStatus(forJob: job.id) == .complete)
     }
 
+    // MARK: clear log
+
+    @Test("clearFinishedJobs hides the terminal sweeps and leaves the live ones")
+    func clearHidesOnlyFinished() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let running = try await services.createJob(platform: .pinterest)
+        let paused = try await services.createJob(platform: .pinterest)
+        let done = try await services.createJob(platform: .twitter)
+        let stopped = try await services.createJob(platform: .twitter)
+        try await services.setJobStatus(jobID: paused.id, to: .paused)
+        try await services.setJobStatus(jobID: done.id, to: .complete)
+        try await services.setJobStatus(jobID: stopped.id, to: .halted)
+
+        let cleared = try await services.clearFinishedJobs()
+
+        #expect(cleared == 2)
+        let listed = try await services.listJobs()
+        // A paused sweep that can't be seen can't be resumed — it stays.
+        #expect(Set(listed.map(\.id)) == [running.id, paused.id])
+    }
+
+    @Test("a cleared sweep keeps its items, so a later sweep still skips them (P14)")
+    func clearKeepsTheDownloadSkipSet() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let old = try await services.createJob(platform: .pinterest)
+        try await services.recordJobItem(
+            jobID: old.id, sourceID: "pin-1", status: .ingested, blobHash: "hash")
+        try await services.setJobStatus(jobID: old.id, to: .complete)
+
+        try await services.clearFinishedJobs()
+
+        // The cleared job is gone from the LIST but not from the ledger: a new sweep
+        // of the same platform still knows pin-1 has landed.
+        #expect(try await services.listJobs().isEmpty)
+        let next = try await services.createJob(platform: .pinterest)
+        #expect(try await services.knownSourceIDs(forJob: next.id) == ["pin-1"])
+        #expect(try await services.getJob(id: old.id).clearedAt != nil)
+    }
+
+    @Test("clearing again clears nothing — cleared_at is stamped once")
+    func clearIsIdempotent() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let done = try await services.createJob(platform: .pinterest)
+        try await services.setJobStatus(jobID: done.id, to: .complete)
+        let stamp = Date(timeIntervalSince1970: 1_700_000_000)
+
+        #expect(try await services.clearFinishedJobs(now: stamp) == 1)
+        #expect(try await services.clearFinishedJobs() == 0)
+        let cleared = try await services.getJob(id: done.id).clearedAt
+        #expect(cleared.map { abs($0.timeIntervalSince(stamp)) < 0.001 } == true)
+    }
+
+    @Test("clearing with nothing finished is a no-op")
+    func clearWithNothingFinished() async throws {
+        let (services, temp) = try makeServices()
+        defer { temp.cleanup() }
+        let running = try await services.createJob(platform: .pinterest)
+        #expect(try await services.clearFinishedJobs() == 0)
+        #expect(try await services.listJobs().map(\.id) == [running.id])
+    }
+
     // MARK: not-found paths
 
     @Test("job operations on an absent job throw notFound")

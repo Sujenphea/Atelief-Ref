@@ -192,10 +192,39 @@ extension AppServices {
         }
     }
 
-    /// All jobs, newest first (the progress UI's list). Read.
+    /// The LISTED jobs, newest first (the progress UI's list) — everything the user
+    /// hasn't cleared. A cleared sweep keeps its row and its items (they're the
+    /// download-skip set); it just stops being shown. Read.
     public func listJobs() async throws -> [Job] {
         try await read { db in
-            try Job.order(Column("created_at").desc, Column("id")).fetchAll(db)
+            try Job
+                .filter(Column("cleared_at") == nil)
+                .order(Column("created_at").desc, Column("id"))
+                .fetchAll(db)
+        }
+    }
+
+    /// Clear every FINISHED sweep from the list — stamp `cleared_at` on each job
+    /// that is `complete` or `halted` and not already cleared. Returns how many were
+    /// cleared (0 when there was nothing to clear).
+    ///
+    /// Terminal-only by design: an `open` or `paused` sweep is still live work the
+    /// user can pause, resume or cancel, and hiding it would strand it — a paused
+    /// sweep that can't be seen can't be resumed. Nothing is DELETED: the rows stay
+    /// so a later sweep still skips re-downloading everything these ones landed
+    /// (``knownSourceIDs(forJob:)`` reads across all jobs of the platform).
+    /// Filter + stamp run in ONE write transaction, so a sweep that transitions in
+    /// the gap is either wholly cleared or wholly left alone (G9).
+    @discardableResult
+    public func clearFinishedJobs(now: Date = Date()) async throws -> Int {
+        try await write { db in
+            try db.execute(sql: """
+                UPDATE job SET cleared_at = ?
+                 WHERE cleared_at IS NULL AND status IN (?, ?)
+                """, arguments: [
+                    now, JobStatus.complete.rawValue, JobStatus.halted.rawValue,
+                ])
+            return db.changesCount
         }
     }
 

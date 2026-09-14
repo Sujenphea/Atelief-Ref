@@ -37,7 +37,7 @@ enum Migrator {
     ///
     /// Pinned by a test — treat as append-only forever. Adding a migration means
     /// appending its identifier here AND in the test's expected list.
-    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23"]
+    static let registeredIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23", "v24"]
 
     /// Builds the migrator with every registered migration, in order.
     static func makeMigrator() -> DatabaseMigrator {
@@ -208,6 +208,14 @@ enum Migrator {
         // never edit this body.
         migrator.registerMigration("v23") { db in
             try createV23Schema(db)
+        }
+
+        // v24 — `job.cleared_at`, so the Sweeps list can be cleared without
+        // DELETEing the ledger rows the download-skip set is computed from.
+        // Additive, no backfill: every existing sweep stays listed. SHIPPED once
+        // released: never edit this body.
+        migrator.registerMigration("v24") { db in
+            try createV24Schema(db)
         }
 
         return migrator
@@ -1322,6 +1330,28 @@ enum Migrator {
         try db.execute(sql: """
             CREATE INDEX index_asset_analysis_on_analysis_seq
                 ON asset_analysis(analysis_seq);
+            """)
+    }
+
+    // MARK: - v24
+
+    /// `job.cleared_at` — when the user cleared a finished sweep from the Sweeps
+    /// list, NULL while it is still listed.
+    ///
+    /// A cleared sweep is HIDDEN, not deleted. `job_item` cascades from `job`, and
+    /// those items are exactly the set
+    /// ``AppServices/knownSourceIDs(forJob:)`` answers with — the ids a sweep uses
+    /// to skip re-DOWNLOADING what it already has (P14), read across every job of the
+    /// platform. So a `DELETE FROM job` behind a "Clear Log" button would silently
+    /// make the next sweep re-fetch the user's whole history; content-addressing
+    /// would still dedup the bytes, but only after paying for them. Hiding keeps the
+    /// list tidy and the skip set intact.
+    ///
+    /// NULL for every existing row: nothing has been cleared yet, so an upgrade
+    /// changes nothing about what the list shows.
+    private static func createV24Schema(_ db: Database) throws {
+        try db.execute(sql: """
+            ALTER TABLE job ADD COLUMN cleared_at TEXT;
             """)
     }
 }

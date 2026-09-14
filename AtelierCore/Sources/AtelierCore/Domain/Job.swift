@@ -62,6 +62,14 @@ public struct Job: Sendable, Equatable, Hashable, Codable, Identifiable {
     public var createdAt: Date
     /// Last progress/status change.
     public var updatedAt: Date
+    /// When the user cleared this sweep from the Sweeps list, or nil while it is
+    /// still listed. A CLEAR IS COSMETIC: the row and its `job_item` children stay,
+    /// because those items are the download-skip set a later sweep consults
+    /// (``AppServices/knownSourceIDs(forJob:)`` reads every job of the platform).
+    /// Deleting them to tidy the list would quietly cost the user a re-download of
+    /// everything they have already imported — the one thing the consent panel
+    /// promises re-sweeps won't do. Only a TERMINAL sweep can be cleared.
+    public var clearedAt: Date?
 
     /// Explicit snake_case column/coding names (exact acronym mapping).
     public enum CodingKeys: String, CodingKey {
@@ -70,6 +78,7 @@ public struct Job: Sendable, Equatable, Hashable, Codable, Identifiable {
         case ingestedCount = "ingested_count"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case clearedAt = "cleared_at"
     }
 
     public init(
@@ -80,7 +89,8 @@ public struct Job: Sendable, Equatable, Hashable, Codable, Identifiable {
         totalEstimate: Int? = nil,
         ingestedCount: Int = 0,
         createdAt: Date,
-        updatedAt: Date
+        updatedAt: Date,
+        clearedAt: Date? = nil
     ) {
         self.id = id
         self.platform = platform
@@ -90,6 +100,7 @@ public struct Job: Sendable, Equatable, Hashable, Codable, Identifiable {
         self.ingestedCount = ingestedCount
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.clearedAt = clearedAt
     }
 }
 

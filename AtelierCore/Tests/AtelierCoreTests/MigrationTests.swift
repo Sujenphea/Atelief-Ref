@@ -88,7 +88,7 @@ struct MigrationAppendOnlyTests {
     // PINNED COMMITTED LIST. Editing or removing a shipped migration identifier
     // is FORBIDDEN — it would re-run or diverge already-migrated installs. To
     // change the schema, APPEND a new identifier ("v2", …) here and register it.
-    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23"]
+    static let committedIdentifiers = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23", "v24"]
 
     @Test("registered identifiers equal the pinned committed list (DatabaseMigrator.migrations)")
     func registeredIdentifiersMatch() {
@@ -3172,6 +3172,61 @@ struct MigrationV23Tests {
             // pending, which is what the old predicate said too.
             let embeddingSeq = try seq(db, table: "asset_embedding", assetID: assetID)
             #expect(embeddingSeq == nil)
+        }
+    }
+}
+
+// MARK: - v24 (the Sweeps "Clear Log" column)
+
+/// v24 is a bare additive column, so its tests pin the two things a hiding column
+/// must be: invisible to existing rows, and a change to `job` ALONE — the ledger
+/// rows the download-skip set is computed from must survive it untouched.
+@Suite("Migration v24 — job.cleared_at")
+struct MigrationV24Tests {
+
+    private static let base = "2026-01-01 00:00:00.000"
+
+    private func seedJob(_ db: Database) throws -> String {
+        let jobID = UUID().uuidString
+        try db.execute(sql: """
+            INSERT INTO job (id, platform, status, ingested_count, created_at, updated_at)
+            VALUES (?, 'pinterest', 'complete', 1, ?, ?);
+            """, arguments: [jobID, Self.base, Self.base])
+        try db.execute(sql: """
+            INSERT INTO job_item (job_id, source_id, status, blob_hash, updated_at)
+            VALUES (?, 'pin-1', 'ingested', 'hash', ?);
+            """, arguments: [jobID, Self.base])
+        return jobID
+    }
+
+    @Test("an existing sweep upgrades to cleared_at NULL — still listed")
+    func existingJobsStayListed() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v23")
+        let jobID = try dbQueue.write { db in try seedJob(db) }
+
+        try Migrator.makeMigrator().migrate(dbQueue)   // apply v24
+
+        try dbQueue.read { db in
+            let cleared = try DatabaseValue.fetchOne(
+                db, sql: "SELECT cleared_at FROM job WHERE id = ?", arguments: [jobID])
+            #expect(cleared?.isNull == true)
+        }
+    }
+
+    @Test("v24 leaves job_item alone — the download-skip set survives the upgrade")
+    func itemsSurvive() throws {
+        let dbQueue = try DatabaseQueue()
+        try Migrator.makeMigrator().migrate(dbQueue, upTo: "v23")
+        let jobID = try dbQueue.write { db in try seedJob(db) }
+
+        try Migrator.makeMigrator().migrate(dbQueue)   // apply v24
+
+        try dbQueue.read { db in
+            let sources = try String.fetchAll(
+                db, sql: "SELECT source_id FROM job_item WHERE job_id = ?",
+                arguments: [jobID])
+            #expect(sources == ["pin-1"])
         }
     }
 }

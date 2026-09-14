@@ -20,6 +20,7 @@ struct BulkSweepsView: View {
     @ObservedObject var model: IngestionModel
 
     @State private var confirmingTurnOff = false
+    @State private var confirmingClear = false
 
     var body: some View {
         Group {
@@ -58,8 +59,29 @@ struct BulkSweepsView: View {
             }
             .toolbar {
                 ToolbarItem {
+                    // Disabled rather than hidden while every sweep is still live:
+                    // a control that comes and goes as a sweep finishes is harder to
+                    // find than one that is always in the same place.
+                    Button("Clear Log") { confirmingClear = true }
+                        .disabled(!model.hasFinishedSweeps)
+                }
+                ToolbarItem {
                     Button("Turn Off Bulk Import") { confirmingTurnOff = true }
                 }
+            }
+            .confirmationDialog(
+                "Clear finished sweeps?",
+                isPresented: $confirmingClear,
+                titleVisibility: .visible
+            ) {
+                // Return commits, as in every confirmation dialog here.
+                Button("Clear") { model.clearSweepLog() }
+                    .keyboardShortcut(.defaultAction)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Completed and stopped sweeps leave the list. Anything still "
+                     + "running or paused stays. Your imported items are untouched, "
+                     + "and a later sweep still skips what you already have.")
             }
             .confirmationDialog(
                 "Turn off bulk import?",
