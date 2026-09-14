@@ -77,6 +77,31 @@ export const cursorFromRequestURL = (url) => paramFromRequestURL(url, "cursor");
  * board-id rule cannot be reused. */
 export const boardIdFromRequestURL = (url) => paramFromRequestURL(url, "board_id");
 
+/**
+ * True for the board feed's FIRST page — the request the board issues on navigation,
+ * whose `cursor` is EMPTY: `…/board/note?board_id=<24-hex>&num=30&cursor=&image_formats=…`
+ * (the form captured live; every later page carries the previous response's cursor).
+ *
+ * It is the only proof a run can have that it holds the TOP of the feed, and the feed
+ * gives no other: it pages FORWARD only — a cursor buys the NEXT slice and no request
+ * walks back — while the sweep's single lever is a scroll to the bottom. So a board that
+ * was ALREADY SCROLLED when the sweep started fetched its opening slice in an earlier page
+ * session: that response is long out of the hook's replay buffer and can never be
+ * re-requested for this run. Measured on a live 116-note board (2026-09-14): the sweep saw
+ * pages B·C·D, captured 78 notes, reported `complete`, and page A's 38 were simply gone.
+ *
+ * The `board_id` clause is what keeps this honest rather than merely convenient:
+ * `cursorFromRequestURL` cannot tell an EMPTY cursor from a url it could not parse at all
+ * (both read null), so an unreadable url would otherwise present itself as the first page
+ * — the exact mistake this predicate exists to catch. A query that parsed has the board id;
+ * one that did not, has nothing.
+ */
+export function isFirstBoardFeedRequest(url) {
+  return isBoardFeedRequest(url)
+    && boardIdFromRequestURL(url) !== null
+    && cursorFromRequestURL(url) === null;
+}
+
 /** Drop a response that belongs to a DIFFERENT board (the hook's replay buffer can hold
  * pages from a board visited earlier in the same tab). Unknown → drop, mirroring X: a
  * scope we cannot verify is never worth the risk of sweeping the wrong feed. */

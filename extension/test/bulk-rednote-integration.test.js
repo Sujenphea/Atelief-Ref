@@ -339,6 +339,178 @@ test("rednote integration: a refusal PRE-EMPTS pages already queued behind it", 
   assert.equal(result.counts.ingested, 0);
 });
 
+// MARK: - 1A: the sweep must hold the feed's FIRST page, or refuse to run
+//
+// Measured live 2026-09-14 on a 116-note board: the sweep captured 78 and reported
+// `complete`. The board's own responses show four pages — A(38) B(37) C(38) D(3) — and the
+// run held B·C·D. 116 − 78 = 38 = page A, exactly. The board had been scrolled before the
+// sweep started, so A was fetched in an earlier page session; the feed pages FORWARD only
+// and the driver's one lever is a scroll to the bottom, so no amount of scrolling can ask
+// for it again. This is the T0/T6a class of defect — a wrong answer that reports success —
+// and the fix is to refuse rather than to under-capture quietly.
+//
+// The cursors below are the ones that board actually returned.
+const CURSOR_A = "6a804923000000004d0075a2";   // page A's response → page B's request
+const CURSOR_B = "6a650248000000004c01f0c7";
+const CURSOR_C = "6a616185000000004d00a318";
+
+test("rednote integration: a sweep that never held the first page is REFUSED, not completed", async () => {
+  // The live failure in miniature: the run's first response is a MID-FEED page. Before 1A
+  // this swept to `complete`, deleted the checkpoint and reported success — with a whole
+  // page of the board never seen and no way for the user to know.
+  const pageB = feed(FRESH_ROWS.slice(0, 4));
+  const pageC = feed(FRESH_ROWS.slice(4, 8), { hasMore: false });
+  const { source, state } = boardSource([[pageC, feedUrl(CURSOR_B)]]);
+  source.onResponse(pageB, feedUrl(CURSOR_A));
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "halted", "a board swept from the middle must never close 'complete'");
+  assert.equal(result.haltStatus, null, "a self-halt → the controller closes the job paused, not cancelled");
+  assert.match(result.error, /RednoteFeedStartError/, "the halt is TYPED, not a bare throw");
+  assert.match(result.error, /reload the board page/i, "the halt must tell the user what to DO");
+  assert.deepEqual(recorder.ids(), [], "a refused sweep relays nothing — a partial board is not a board");
+  assert.equal(state.scrolls, 0, "it refused before spending a single scroll on the wrong start");
+});
+
+test("rednote integration: a first page that arrives AFTER enumeration starts is not refused", async () => {
+  // The one way this rule could be worse than the bug. The controller posts the replay
+  // request and returns immediately; the hook's buffered responses come back on their own
+  // `postMessage` tasks and land during the source's FIRST SETTLE — so at the moment
+  // `enumerate` is first pulled there is legitimately nothing to judge. A check at
+  // construction, or on the first response parsed, would refuse this perfectly good sweep.
+  // Here the fake `sleep` IS that settle: nothing exists until it runs.
+  let replayed = false;
+  const { source, state } = boardSource([], {
+    sleep: async () => {
+      if (replayed) return;
+      replayed = true;
+      source.onResponse(PAGE1, feedUrl());                      // the opening slice, late
+      source.onResponse(lastPage(), feedUrl(PAGE1.data.cursor));
+    },
+  });
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete", "a good sweep was refused for not having its replay YET");
+  assert.equal(result.error, null);
+  assert.deepEqual(recorder.ids(), idsOf(PAGE1));
+  assert.equal(state.scrolls, 1, "the settle it waited through is the one the replay arrived in");
+});
+
+test("rednote integration: the first page arriving OUT OF ORDER still licenses the sweep", async () => {
+  // The buffer replays in fetch order, but nothing in the seam depends on that: the rule
+  // asks whether the opening slice ARRIVED, never whether it arrived first. A page A
+  // delivered behind a later page must still count, or a reordering would refuse a sweep
+  // that holds the whole board.
+  const pageB = feed(FRESH_ROWS.slice(0, 3));
+  const { source } = boardSource([[lastPage(), feedUrl(pageB.data.cursor)]]);
+  source.onResponse(pageB, feedUrl(PAGE1.data.cursor));   // a later page…
+  source.onResponse(PAGE1, feedUrl());                    // …then the opening slice
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  assert.deepEqual(recorder.ids(), [...idsOf(pageB), ...idsOf(PAGE1)], "both pages swept, in arrival order");
+});
+
+test("rednote integration: the SAME page replayed twice is not a substitute for the first page", async () => {
+  // Observed live: two of the run's responses carried the identical cursor `6a616185…`.
+  // A rule that counted responses, or took a second sighting as corroboration, would wave
+  // this straight through — repetition is not evidence of anything.
+  const pageC = feed(FRESH_ROWS.slice(0, 3));
+  const { source } = boardSource([]);
+  source.onResponse(pageC, feedUrl(CURSOR_C));
+  source.onResponse(clone(pageC), feedUrl(CURSOR_C));
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "halted");
+  assert.match(result.error, /RednoteFeedStartError/);
+  assert.deepEqual(recorder.ids(), []);
+});
+
+test("rednote integration: a board small enough to fit on page A sweeps, it does not refuse", async () => {
+  // The honest small case: the opening slice is ALSO the last page (`has_more:false`, no
+  // second request, no cursor anywhere). The rule asks only whether the run holds the
+  // beginning — a feed with exactly one page holds all of it.
+  const only = feed(FRESH_ROWS.slice(0, 3), { hasMore: false });
+  const { source, state } = boardSource([]);
+  source.onResponse(only, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  assert.equal(result.error, null);
+  assert.deepEqual(recorder.ids(), idsOf(only));
+  assert.equal(state.scrolls, 0, "one page was the whole board — nothing was scrolled for");
+});
+
+test("rednote integration: a mid-feed run whose only page is the empty TAIL is refused, not completed", async () => {
+  // A board scrolled to the very bottom before the sweep started: the one thing in the
+  // buffer is the exhausted tail, fetched with a cursor. It yields NO items at all, so the
+  // first-yield check never runs — and without the same rule applied where enumeration
+  // ENDS, this closes `complete` having captured none of a 116-note board. The quietest
+  // possible version of the bug.
+  const { source, state } = boardSource([]);
+  source.onResponse(lastPage(), feedUrl(CURSOR_C));
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "halted", "an empty sweep of a full board reported success");
+  assert.match(result.error, /RednoteFeedStartError/);
+  assert.deepEqual(recorder.ids(), []);
+  assert.equal(state.scrolls, 0);
+});
+
+test("rednote integration: ANOTHER board's first page cannot license this sweep", async () => {
+  // The replay buffer holds pages from a board visited earlier in the same tab, and one of
+  // those is that board's opening slice — an empty cursor on the wrong `board_id`. It is
+  // evidence about a feed we are not sweeping, so the scope gate that keeps its NOTES out
+  // has to keep its licence out too.
+  const foreign = feed(FRESH_ROWS.slice(0, 2));
+  const ours = feed(FRESH_ROWS.slice(2, 5), { hasMore: false });
+  const { source } = boardSource([]);
+  source.onResponse(foreign, feedUrl("", "a1b2c3d4e5f600000000000f"));   // another board, page A
+  source.onResponse(ours, feedUrl(CURSOR_B));                            // ours, mid-feed
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "halted");
+  assert.match(result.error, /RednoteFeedStartError/);
+  assert.deepEqual(recorder.ids(), [], "the wrong board's opening page waved this sweep through");
+});
+
+test("rednote integration: a RESUMED sweep is held to the same rule, for the same reason", async () => {
+  // `resumable: "scroll"` means no cursor is persisted and a resume RE-WALKS from wherever
+  // the page now is — the source cannot even tell it is a resume (`enumerate` ignores the
+  // engine's cursor). So the rule fires on a resume too, and it should: a resume that
+  // starts at page B reaches exactly the notes a fresh one would, dedup-skips what it
+  // already has, and then closes `complete` and clears the checkpoint with page A still
+  // never seen. Being a second attempt does not put the top of the feed back in reach.
+  const pageB = feed(FRESH_ROWS.slice(0, 3), { hasMore: false });
+  const { source } = boardSource([]);
+  source.onResponse(pageB, feedUrl(CURSOR_B));
+
+  const recorder = recordingRelay();
+  const knownSet = new Set(idsOf(PAGE1));   // a prior run's ingest
+  const result = await runSweep(source, { boardId: BOARD_ID }, {
+    ...engineOpts, relay: recorder.relay, knownSet,
+  });
+
+  assert.equal(result.status, "halted");
+  assert.match(result.error, /RednoteFeedStartError/);
+  assert.deepEqual(recorder.ids(), []);
+  assert.equal(result.counts.skipped, 0, "it refused before walking, so nothing was even skipped");
+});
+
 // MARK: - dedup (what makes a scroll-driven resume safe)
 
 test("rednote integration: a re-sweep SKIPS the notes it already has instead of re-ingesting", async () => {

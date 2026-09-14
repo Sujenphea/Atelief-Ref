@@ -130,7 +130,28 @@ export function terminalMessage(result) {
     return shortfall ? `Done, partly expanded — ${n} ingested (${shortfall}).` : `Done — ${n} ingested.`;
   }
   if (result && result.haltStatus === "halted") return `Stopped — ${n} ingested.`;
-  return `Paused (resumable) — ${n} ingested.`;
+  const why = haltReason(result);
+  return why ? `Paused (resumable) — ${n} ingested. ${why}` : `Paused (resumable) — ${n} ingested.`;
+}
+
+/** WHY a sweep halted, as the sentence to show the user — or null when it halted without
+ * an enumeration error (an app Pause, a media auth wall).
+ *
+ * This is the only place a runtime halt's reason reaches a human. `REASON_MESSAGE` cannot
+ * serve it: that table answers `resolveSweepSpec`, which refuses BEFORE a sweep starts and
+ * knows only the tab's URL — and the halts worth explaining (a board swept from the middle,
+ * a 461 refusal, a scroll wall) are all things only the running sweep can discover. So the
+ * error carries its own copy and this renders it; the alternative is a second table of
+ * strings keyed by error name, which could only ever drift from the errors it describes.
+ *
+ * The engine stringifies the error (`String(error)` → `"RednoteFeedStartError: Reload…"`),
+ * so the class name is trimmed off the front: it is a fact about our source tree, not
+ * something to show a user mid-sentence. Anything that does not carry that prefix is
+ * passed through as-is. */
+export function haltReason(result) {
+  const raw = result && typeof result.error === "string" ? result.error.trim() : "";
+  if (!raw) return null;
+  return raw.replace(/^[A-Za-z]*Error:\s*/, "") || null;
 }
 
 /** How an expansion pass fell short, phrased for the status line, or null when it did not.

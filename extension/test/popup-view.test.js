@@ -10,8 +10,9 @@ import assert from "node:assert/strict";
 
 import {
   sweepLabel, sweepWarning, startEnabled, terminalMessage, launchOutcome,
-  expansionOption, expansionShortfall,
+  expansionOption, expansionShortfall, haltReason,
 } from "../src/popup-view.js";
+import { RednoteFeedStartError, RednoteStallError } from "../src/rednote-source.js";
 import { NOTE_OPEN_BUDGET } from "../src/config.js";
 
 test("sweepLabel: X main bookmarks vs. a folder vs. a Pinterest board vs. IG saved", () => {
@@ -82,6 +83,55 @@ test("terminalMessage: a resumable halt (pause / wall) → Paused", () => {
   assert.equal(
     terminalMessage({ status: "halted", haltStatus: null, counts: { ingested: 0 } }),
     "Paused (resumable) — 0 ingested.");
+});
+
+test("terminalMessage: a resumable halt SAYS WHY, so a refusal is actionable and not a mystery", () => {
+  // The only place a RUNTIME halt reaches a human. `REASON_MESSAGE` cannot serve this one:
+  // that table answers `resolveSweepSpec`, which refuses before a sweep starts from the
+  // tab URL alone — and "this board was already scrolled past its first page" is something
+  // only the running sweep can discover. Constructing the real error (rather than pasting
+  // its text) is what makes this test fail if the copy ever stops telling the user what to do.
+  const refused = terminalMessage({
+    status: "halted", haltStatus: null, counts: { ingested: 0 },
+    error: String(new RednoteFeedStartError()),
+  });
+  assert.match(refused, /Paused \(resumable\) — 0 ingested\./, "the outcome line still leads");
+  assert.match(refused, /reload the board page/i, "the halt reached the user without its instruction");
+  assert.equal(refused.includes("RednoteFeedStartError"), false,
+    "the class name is a fact about our source tree, not copy for a user");
+
+  // The same route carries the other runtime halts — a stall says which wall it hit.
+  const stalled = terminalMessage({
+    status: "halted", haltStatus: null, counts: { ingested: 78 },
+    error: String(new RednoteStallError(4)),
+  });
+  assert.match(stalled, /78 ingested/);
+  assert.match(stalled, /stalled/);
+  assert.equal(stalled.includes("RednoteStallError"), false);
+});
+
+test("terminalMessage: a halt with nothing to explain reads exactly as it always did", () => {
+  // An app Pause and a media auth wall carry no enumeration error; appending an empty
+  // reason (or the word "null") would be worse than saying nothing.
+  assert.equal(
+    terminalMessage({ status: "halted", haltStatus: "paused", counts: { ingested: 7 }, error: null }),
+    "Paused (resumable) — 7 ingested.");
+  // A Cancel is terminal, not a wall — its line is about the user's own decision.
+  const cancelled = terminalMessage({
+    status: "halted", haltStatus: "halted", counts: { ingested: 3 },
+    error: String(new RednoteFeedStartError()),
+  });
+  assert.equal(cancelled, "Stopped — 3 ingested.");
+});
+
+test("haltReason: the class-name prefix is trimmed, anything else is passed through whole", () => {
+  assert.equal(haltReason(null), null);
+  assert.equal(haltReason({ status: "halted" }), null);
+  assert.equal(haltReason({ error: "   " }), null, "whitespace is not a reason");
+  assert.equal(haltReason({ error: "the tab went away" }), "the tab went away");
+  assert.equal(haltReason({ error: "Error: plain" }), "plain");
+  // Only the leading class name goes: a colon inside the sentence is part of the sentence.
+  assert.equal(haltReason({ error: "TypeError: a: b" }), "a: b");
 });
 
 test("terminalMessage: a missing/garbage result defaults to 0 and doesn't throw", () => {

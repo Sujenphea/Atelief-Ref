@@ -13,8 +13,9 @@ import { readFileSync } from "node:fs";
 import {
   BOARD_FEED_PATH, NOTE_DETAIL_PATH, RednoteChallengeError, boardIdFromRequestURL,
   cursorFromRequestURL, detectRednoteChallenge, detectRednoteDetailChallenge,
-  isBoardFeedRequest, isNoteDetailRequest, mapBoardNote, mapNoteImage, matchesScope,
-  mapNoteVideo, parseBoardFeedPage, parseNoteDetail, pickRednoteImage, rednoteAuthor,
+  isBoardFeedRequest, isFirstBoardFeedRequest, isNoteDetailRequest, mapBoardNote,
+  mapNoteImage, matchesScope, mapNoteVideo, parseBoardFeedPage, parseNoteDetail,
+  pickRednoteImage, rednoteAuthor,
   videoSourceId, VIDEO_SOURCE_SUFFIX,
 } from "../src/bulk-rednote.js";
 import { readVideoCandidates, STREAM_REFUSAL, videoCandidates } from "../src/rednote-video.js";
@@ -86,6 +87,39 @@ test("isBoardFeedRequest matches the feed path only — never the adjacent telem
   assert.equal(isBoardFeedRequest("//as.rednote.com/api/sec/v1/shield/webprofile"), false);
   assert.equal(isBoardFeedRequest("https://webapi.rednote.com/api/sns/web/v2/comment/page"), false);
   assert.equal(isBoardFeedRequest(null), false);
+});
+
+// MARK: - the FIRST page (1A — the only proof a sweep started at the top of the feed)
+
+test("isFirstBoardFeedRequest: an empty cursor is the opening slice, any cursor is not", () => {
+  // The live shapes: navigation asks with `cursor=` empty, every later page carries the
+  // previous response's cursor. This predicate is the whole of the evidence a sweep has
+  // that page A is in its hands, so it has to separate exactly those two.
+  const url = (cursor) => "//webapi.rednote.com/api/sns/web/v1/board/note"
+    + `?board_id=69322476000000001202811f&num=30&cursor=${cursor}&image_formats=jpg,webp,avif`;
+  assert.equal(isFirstBoardFeedRequest(url("")), true);
+  // The three cursors the 116-note board actually returned, each of which means "NOT the
+  // beginning" and must never license a sweep.
+  for (const cursor of ["6a804923000000004d0075a2", "6a650248000000004c01f0c7", "6a616185000000004d00a318"]) {
+    assert.equal(isFirstBoardFeedRequest(url(cursor)), false, `cursor ${cursor} read as the first page`);
+  }
+  // A cursor param that is absent entirely is the same claim as an empty one.
+  assert.equal(
+    isFirstBoardFeedRequest(`//webapi.rednote.com${BOARD_FEED_PATH}?board_id=bd1&num=30`), true);
+});
+
+test("isFirstBoardFeedRequest: a url it cannot READ is never evidence", () => {
+  // The trap this predicate exists to avoid. `cursorFromRequestURL` answers null for an
+  // empty cursor AND for a url it could not parse — so "cursor is null" alone would read
+  // every unparseable url as the feed's first page and wave the sweep through. Requiring
+  // the `board_id` the query must carry is what tells the two apart.
+  for (const bad of ["not a url", "", null, undefined, `//webapi.rednote.com${BOARD_FEED_PATH}?num=30`]) {
+    assert.equal(isFirstBoardFeedRequest(bad), false, `unreadable url vouched for a sweep: ${bad}`);
+  }
+  // …and it is still the BOARD FEED that must be speaking: neither the note-detail call
+  // nor the telemetry the board fires alongside it can vouch for the feed's position.
+  assert.equal(isFirstBoardFeedRequest(`//webapi.rednote.com${NOTE_DETAIL_PATH}?board_id=bd1`), false);
+  assert.equal(isFirstBoardFeedRequest("https://t2.rnote.com/api/v2/collect?board_id=bd1"), false);
 });
 
 // MARK: - scope (replay-buffer contamination between boards)
