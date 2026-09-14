@@ -484,7 +484,8 @@ re-request an earlier page — so a sweep started on an already-scrolled board c
 only capture from where the page happens to be. The replay buffer is not the
 constraint (25 entries, 8 MB).
 
-**Fixed in two parts, deliberately.** `392dc8d` makes the sweep **refuse** unless
+**Fixed, and confirmed live: a mid-scrolled board now yields all 116.** In two
+parts, deliberately. `392dc8d` makes the sweep **refuse** unless
 it holds the feed's first page (`isFirstBoardFeedRequest`, halting resumable).
 That is a guard, not a fix — it converts silent loss into a loud refusal. `d927083`
 is the fix: the sweep **resets the feed in-page** by clicking the board's own
@@ -560,10 +561,11 @@ the real URL, query string and all — closing **Open question 1**.
   re-open is exercised by tests alone.
 - `master_url` was fetched live from a browser (206, `video/mp4`), **not** from
   the service worker's cookie-less cross-origin fetch.
-- **The reset, end to end.** The in-page refetch was reproduced by hand in the
-  console on ONE board in ONE SPA build; the sweep driving it and capturing all
-  116 has not been run. Every divergence lands in the guard, which is safe and is
-  also how we would find out.
+- ~~**The reset, end to end.**~~ **Verified 2026-09-14**: a sweep started on a
+  deliberately mid-scrolled board drove the reset itself and captured all **116**
+  notes — the same board and the same starting condition that silently yielded 78
+  before `d927083`. Still one board and one SPA build, so the guard stays; any
+  divergence lands there rather than in a wrong capture.
 - `FEED_RESET_SETTLE_MS = 1200` and `FEED_RESET_GRACE_MS = 1500` are **reasoned,
   not measured**. Too short shows up as a log line and degrades into the guard,
   never as a wrong capture.
