@@ -35,6 +35,9 @@ nonisolated enum AppLog {
     static let analysis = Logger(subsystem: subsystem, category: "analysis")
     /// Per-batch ingest timing (059).
     static let ingestTiming = Logger(subsystem: subsystem, category: "ingest-timing")
+    /// The item detail page's media path — `VideoPosterGate` in particular, whose
+    /// three exits are otherwise invisible from outside the view (489).
+    static let detail = Logger(subsystem: subsystem, category: "detail")
 }
 
 /// The non-sensitive facts a diagnostics report is built from. No titles, URLs,

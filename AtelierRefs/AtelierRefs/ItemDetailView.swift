@@ -24,6 +24,8 @@ import AtelierIngestion
 // For `AVPlayerItem.publisher(for: \.status)` — the poster placeholder's gate.
 import AtelierTokens
 import Combine
+// For `AppLog.detail` — the poster backstop's log line.
+import OSLog
 import SwiftUI
 
 /// Force AVKit into the process before the first ``VideoPlayer`` is built.
@@ -426,6 +428,11 @@ struct ItemDetailView: View {
     /// False for every kind that is not a video, and reset per navigation.
     @State private var videoReady = false
 
+    /// The bounded ceiling on ``videoReady`` — see `loadMedia`'s `.video` arm for why
+    /// it is unstructured and why it is 3s. Held here so a navigation can cancel the
+    /// previous item's ceiling before arming its own.
+    @State private var posterBackstop: Task<Void, Never>?
+
     /// The star's live state (011 · U5). Local, and seeded from `asset.isFavorite`
     /// whenever the shown asset changes, for the same reason the Name / Note fields
     /// keep a local draft: the hosts hand this view an `Asset` VALUE captured when
@@ -556,6 +563,9 @@ struct ItemDetailView: View {
         .onDisappear {
             player?.pause()
             player = nil
+            // Unstructured, so nothing else ends it when the page closes.
+            posterBackstop?.cancel()
+            posterBackstop = nil
         }
     }
 
@@ -1000,13 +1010,23 @@ struct ItemDetailView: View {
                         VideoPlayer(player: player)
                     }
                     if !videoReady {
-                        if let image = mediaImage {
-                            image.resizable().scaledToFit()
-                        } else {
-                            // No poster on disk (an older ingest, a reaped tier):
-                            // the spinner is still the honest answer there.
-                            ProgressView()
+                        Group {
+                            if let image = mediaImage {
+                                image.resizable().scaledToFit()
+                            } else {
+                                // No poster on disk (an older ingest, a reaped tier):
+                                // the spinner is still the honest answer there.
+                                ProgressView()
+                            }
                         }
+                        // Decoration, exactly as `fanPile` is — and scoped to the poster,
+                        // NOT to the `ZStack`, which would take the player's clicks with
+                        // it. The poster is opaque and sits over `AVPlayerView`'s own
+                        // transport controls, so while it is up a click aimed at Play
+                        // lands on a picture instead, which reads as a player that does
+                        // not work (489). The player underneath owns this area's clicks;
+                        // the poster only ever owns its pixels.
+                        .allowsHitTesting(false)
                     }
                 }
             case .image:
@@ -1082,6 +1102,9 @@ struct ItemDetailView: View {
         player = nil
         // A new item has no frame yet, so the poster covers again from here.
         videoReady = false
+        // Whatever the previous item armed, this one owns the poster now.
+        posterBackstop?.cancel()
+        posterBackstop = nil
         // Drag-out export item (011 · Cluster A): the original blob + human name for
         // this asset. Computed once here, `nil` for a media-less kind / missing blob.
         exportItem = source.flatMap { AssetExport.exportItem(asset: asset, source: $0, blobURL: blobURL) }
@@ -1093,10 +1116,48 @@ struct ItemDetailView: View {
             linkAVKit()
             let player = AVPlayer(url: url)
             self.player = player
+            // A bounded ceiling on the poster, armed BEFORE the wait and independent
+            // of it.
+            //
+            // `VideoPosterGate` guarantees the poster lifts on every RETURN from the
+            // wait; it cannot guarantee the wait returns. If the status sequence
+            // neither yields a status nor ends — a publisher that never delivers, an
+            // item parked at `.unknown` — the `for await` simply stays suspended, the
+            // `defer` never runs, and the poster sits over a playing video forever.
+            // That is the shape of the bug as reported, and no amount of care inside
+            // the gate closes it, because the gate is not running at that point.
+            //
+            // So the ceiling lives out here. An unstructured `Task` on purpose: it
+            // must survive `awaitFirstFrame` suspending indefinitely, which a child of
+            // this task would not. `loadMedia` cancels it on the next item, and the
+            // line below cancels it on the ordinary path where the gate won the race.
+            //
+            // 3s is chosen against the measurement, not by feel: `VideoOpenProbeTests`
+            // puts the wait to `.readyToPlay` at 92.4 ms for a 640×480 clip. Three
+            // seconds is ~30× that — far enough out that a legitimately slow 1080p
+            // open is never cut short, close enough that a stuck gate is a hitch
+            // rather than a broken player.
+            posterBackstop = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled, !videoReady else { return }
+                // Report the item's ACTUAL status at the moment the ceiling fires.
+                // This separates the two causes that look identical from the gate:
+                // a status the stream never delivered (item ready, stream at fault)
+                // from an item that genuinely never prepared (item at fault).
+                let actual = player.currentItem?.status.rawValue ?? -1
+                AppLog.detail.notice(
+                    "video poster lifted: backstop (gate did not return; item status \(actual, privacy: .public))")
+                videoReady = true
+            }
             // Then hold the poster up until the player can actually draw. Awaiting
             // here rather than in a second `.task` keeps it on this navigation's
             // cancellation: stepping away mid-load drops the wait with the load.
             await awaitFirstFrame(of: player)
+            // The gate returned, so the ceiling is not needed. (Unreachable when the
+            // gate is the thing that is stuck — which is exactly why the ceiling is
+            // not a child of this task.)
+            posterBackstop?.cancel()
+            posterBackstop = nil
         case .image, .link, .tweet:
             // The loader owns the image on the collection detail path.
             guard !usesExternalImageLoader else { break }
@@ -1114,23 +1175,53 @@ struct ItemDetailView: View {
         }
     }
 
-    /// Flip ``videoReady`` once `player` leaves `.unknown` — i.e. once it either
-    /// has a frame to show or has failed trying.
+    /// Flip ``videoReady`` once the wait in ``VideoPosterGate`` ends, however it ends.
     ///
-    /// **`.failed` lifts the poster too, deliberately.** The alternative is a
-    /// poster left up forever over a player that will never draw, which looks
-    /// exactly like a working video that refuses to play — the player's own error
-    /// state is the more honest thing to show. A poster that stays would also hide
-    /// the one signal a person could report.
+    /// The lift is UNCONDITIONAL and that is the whole fix (489). A cancelled
+    /// `for await` does not throw, it just ends, so the old version — which set the
+    /// flag inside the loop — left the poster up over a playing video whenever the
+    /// wait was cut short. The gate now runs the lift from a `defer`, so there is no
+    /// path out of it that leaves the poster up; see ``VideoPosterGate`` for the full
+    /// account, including why `.failed` lifts too.
+    ///
+    /// Lifting on a CANCELLED load costs nothing: `loadMedia` re-arms the poster for
+    /// the next item before it builds that item's player.
     private func awaitFirstFrame(of player: AVPlayer) async {
-        guard let item = player.currentItem else {
-            videoReady = true
-            return
-        }
-        for await status in item.publisher(for: \.status).values {
-            guard status != .unknown else { continue }
-            videoReady = true
-            return
+        await VideoPosterGate.firstFrame(
+            statuses: player.currentItem.map(Self.statusStream(for:))
+        ) { videoReady = true }
+    }
+
+    /// `AVPlayerItem.status`, as a stream that cannot drop the one value that matters.
+    ///
+    /// **Why not `item.publisher(for: \.status).values`**, which this replaces and
+    /// which is the obvious spelling. Combine's `AsyncPublisher` requests ONE value at
+    /// a time and buffers nothing: a value published while no `next()` is pending is
+    /// dropped on the floor. KVO for `status` fires on an arbitrary background thread,
+    /// so it can land in the window between two iterations of the consuming loop — and
+    /// `status` transitions exactly ONCE, `.unknown` → `.readyToPlay`. Dropping that
+    /// single value means the wait never ends.
+    ///
+    /// Measured, not theorised: the gate logged `entered`, then `status 0` (`.unknown`,
+    /// the `.initial` value), then nothing at all until the 3s ceiling fired — while
+    /// the video underneath played. One delivery, then silence.
+    ///
+    /// `AsyncStream` buffers, so a value yielded between iterations waits instead of
+    /// vanishing. `.bufferingNewest(1)` is the right policy for a state variable: only
+    /// the latest status has meaning, and an older one arriving late would say nothing
+    /// the newer one does not.
+    ///
+    /// `.initial` is kept so an item that is ALREADY ready when the observation starts
+    /// still reports — otherwise a fast local file could become ready before this line
+    /// runs, and the gate would wait forever on a transition that already happened.
+    private static func statusStream(for item: AVPlayerItem) -> AsyncStream<AVPlayerItem.Status> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let observation = item.observe(\.status, options: [.initial, .new]) { item, _ in
+                continuation.yield(item.status)
+            }
+            // Holds the observation alive for the life of the stream, and invalidates
+            // it when the consumer stops — on cancellation as well as on completion.
+            continuation.onTermination = { _ in observation.invalidate() }
         }
     }
 }
