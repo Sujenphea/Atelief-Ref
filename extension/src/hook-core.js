@@ -37,6 +37,17 @@
  * it without limit). Overridable per-install via `bufferLimit`. */
 var RESPONSE_HOOK_REPLAY_LIMIT = 25;
 
+/** ...and how large they may be in total, because a count is the wrong unit when page sizes
+ * differ by more than an order of magnitude (098 R15). A rednote board page is ~52 KB,
+ * so 25 of them is ~1.3 MB; an X timeline page is ~871 KB, so 25 is ~21 MB of JSON text
+ * — plus a parsed object graph several times larger — pinned in the MAIN world for the
+ * life of the tab, accruing whether or not a sweep ever runs. Overridable per-install
+ * via `byteLimit`. Measured in JS string LENGTH (UTF-16 code units), not real bytes —
+ * CJK-heavy content is roughly 3x this in UTF-8 — so it is a proxy for size, deliberately
+ * cheap. The most recent entry is never evicted: this cap exists to stop ACCUMULATION,
+ * not to refuse a single large page a sweep may still need to replay. */
+var RESPONSE_HOOK_BYTE_LIMIT = 8 * 1024 * 1024;
+
 /**
  * Wrap `target.fetch` AND `target.XMLHttpRequest` so a response whose request URL
  * satisfies `isMatch(url)` is parsed and handed to `post({ url, json })`. Each forwarded
@@ -80,6 +91,7 @@ function installResponseHook(opts) {
   var isMatch = options.isMatch;
   var replaySource = options.replaySource;
   var bufferLimit = options.bufferLimit == null ? RESPONSE_HOOK_REPLAY_LIMIT : options.bufferLimit;
+  var byteLimit = options.byteLimit == null ? RESPONSE_HOOK_BYTE_LIMIT : options.byteLimit;
   var headerAllowlist = options.headerAllowlist || null;
   var proxy = options.proxy || null;
 
@@ -138,11 +150,24 @@ function installResponseHook(opts) {
   // credentialled follow-up is possible, and that is all it needs to know. It is computed
   // at forward time (not replay time) so a replayed entry reports the state of the world
   // when the response was actually seen.
+  //
+  // Each retained entry remembers its own size so the buffer can be bounded by SIZE as
+  // well as by count. `size` is the response's text length where the transport hands it
+  // over for free (the fetch path parses from text; the XHR text path has `responseText`);
+  // an XHR with `responseType: "json"` gives no text, so it contributes 0 and is bounded
+  // by count alone. Imperfect, and strictly better than counting pages of unknown size.
   var recent = [];
-  var forward = function (entry) {
+  var recentBytes = 0;
+  var forward = function (entry, size) {
     entry.hasAuth = !!authHeaders;
-    recent.push(entry);
-    if (recent.length > bufferLimit) recent.shift();
+    var bytes = typeof size === "number" && size > 0 ? size : 0;
+    recent.push({ entry: entry, bytes: bytes });
+    recentBytes += bytes;
+    while (recent.length > bufferLimit ||
+           (recentBytes > byteLimit && recent.length > 1)) {
+      var dropped = recent.shift();
+      recentBytes -= dropped.bytes;
+    }
     post(entry);
   };
 
@@ -191,7 +216,7 @@ function installResponseHook(opts) {
         // Replay: re-emit the buffer (via `post`, not `forward`, so replaying can't grow
         // the buffer or re-stamp `hasAuth`).
         if (replaySource && data.source === replaySource) {
-          for (var i = 0; i < recent.length; i += 1) post(recent[i]);
+          for (var i = 0; i < recent.length; i += 1) post(recent[i].entry);
           return;
         }
         if (proxy && data.source === proxy.requestSource) serveProxyRequest(data);
@@ -222,8 +247,11 @@ function installResponseHook(opts) {
       return originalFetch.apply(null, args).then(function (response) {
         try {
           if (isMatch(requestUrl) && response && typeof response.clone === "function") {
-            response.clone().json().then(function (json) {
-              forward({ url: requestUrl, json: json });
+            // `.text()` + JSON.parse rather than `.json()`: same result, same failure
+            // mode (a bad body rejects/throws into the same catch), and it yields the
+            // byte size the replay buffer needs without a second pass over the data.
+            response.clone().text().then(function (text) {
+              forward({ url: requestUrl, json: JSON.parse(text) }, text.length);
             }).catch(function () {});
           }
         } catch (_error) {
@@ -268,9 +296,14 @@ function installResponseHook(opts) {
             try {
               var type = this.responseType;
               var json = null;
-              if (type === "" || type === "text") json = JSON.parse(this.responseText);
-              else if (type === "json") json = this.response;
-              if (json) forward({ url: url, json: json });
+              var size = 0;
+              if (type === "" || type === "text") {
+                size = this.responseText.length;
+                json = JSON.parse(this.responseText);
+              } else if (type === "json") {
+                json = this.response;           // no text available → size stays 0
+              }
+              if (json) forward({ url: url, json: json }, size);
             } catch (_error) {
               /* ignore a non-JSON / unreadable body */
             }

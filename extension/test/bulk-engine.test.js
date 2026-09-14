@@ -470,6 +470,31 @@ test("classifyIngestResult maps every ingestOne status", () => {
   // blocked-host (3A SSRF refusal) is a permanent per-item skip — never retried, never a halt.
   assert.deepEqual(classifyIngestResult({ status: "blocked-host" }),
     { outcome: OUTCOMES.permanentFailed, signal: "continue" });
+  // A TYPED SKIP from the relay (098 D5 / 020 Risks): every video candidate refused, with no
+  // still to fall back to. It must NOT be a failure of either kind — a permanentFailed marks
+  // the sweep unclean (which disarms the next run's known-set optimisations for the whole
+  // board) and a retryableFailed spends four backoff attempts re-walking a ladder that just
+  // said no.
+  assert.deepEqual(classifyIngestResult({ status: "skipped", reason: "video-ladder-exhausted" }),
+    { outcome: OUTCOMES.skipped, signal: "continue" });
+});
+
+test("a relayed skip leaves the sweep CLEAN — the property the outcome was chosen for", async () => {
+  // `runBulkSweep` records `clean` from retryableFailed + permanentFailed being zero, and the
+  // next sweep's pre-check is armed off that marker. A video note whose ladder gave nothing
+  // must not cost the whole board its optimisation.
+  const items = [{ sourceId: "a", cursor: "1" }, { sourceId: "b", cursor: "2" }];
+  const driver = { enumerate: () => (async function* () { for (const i of items) yield i; })() };
+  const result = await runSweep(driver, null, {
+    relay: async (item) => classifyIngestResult(
+      item.sourceId === "b" ? { status: "skipped", reason: "video-ladder-exhausted" }
+        : { status: "saved", deduplicated: false }),
+    sleep: async () => {}, random: () => 0,
+  });
+  assert.equal(result.status, "complete");
+  assert.equal(result.counts.skipped, 1);
+  assert.equal(result.counts.permanentFailed, 0);
+  assert.equal(result.counts.retryableFailed, 0);
 });
 
 test("classifyIngestResult halts on an app-side pause/cancel (jobStatus relay feedback)", () => {

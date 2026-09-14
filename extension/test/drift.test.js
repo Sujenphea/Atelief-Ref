@@ -10,8 +10,9 @@ import { readFileSync } from "node:fs";
 
 import {
   checkTimeline, checkBoardFeed, checkBoards, checkInstagramSaved, checkThreadDetail,
-  CHECKS, fixtureStaleReminder,
+  checkRednoteBoard, checkRednoteNoteDetail, checkRednoteVideo, CHECKS, fixtureStaleReminder,
 } from "../src/drift.js";
+import { ORIGIN_HOST as REDNOTE_ORIGIN_HOST } from "../src/extractors/rednote.js";
 import { tweet, conversation } from "./fixtures/x-conversation.js";
 
 const load = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url)));
@@ -188,10 +189,467 @@ test("a completely foreign payload is flagged, not thrown", () => {
 
 test("CHECKS registry wires each check to a --flag", () => {
   assert.deepEqual(Object.keys(CHECKS).sort(),
-    ["instagram", "pinterest-board", "pinterest-boards", "x", "x-thread"]);
+    ["instagram", "pinterest-board", "pinterest-boards", "rednote", "rednote-detail",
+      "rednote-video", "x", "x-thread"]);
   assert.equal(CHECKS.x.run, checkTimeline);
   assert.equal(CHECKS.instagram.run, checkInstagramSaved);
   assert.equal(CHECKS["x-thread"].run, checkThreadDetail);
+  assert.equal(CHECKS.rednote.run, checkRednoteBoard);
+  // The expansion endpoint gets its OWN entry beside the board's, the way `x-thread` sits
+  // beside `x`: a second route on a second clock, which a board capture cannot answer for.
+  assert.equal(CHECKS["rednote-detail"].run, checkRednoteNoteDetail);
+  // And the video ladder gets a THIRD, for the same reason again: `rednote-note-detail.json`
+  // is a `type: "normal"` note and cannot answer for a stream ladder, and the video capture
+  // would fail `checkRednoteNoteDetail`'s fan-out rule — which is correct there, since a
+  // video note's one-entry `image_list` is a poster (098 T5a).
+  assert.equal(CHECKS["rednote-video"].run, checkRednoteVideo);
+});
+
+// MARK: - checkBoards: a response that is not a boards list (499)
+//
+// Both fixtures below are COMPOSED, not captured, and deliberately live inline rather
+// than in test/fixtures/ — the distinction `drift-check.js`'s FIXTURE comment draws
+// (a committed fixture answers "does a response the platform sent TODAY still parse";
+// a composed one exercises a specific rule and is asserted literally).
+//
+// The placeholder is the response a user supplied to `--pinterest-boards` by accident:
+// Pinterest sends `board_ideas_preview_detailed` when a board first opens, with
+// `endpoint_name: v3_board_pins` and a `data[]` that is one `type: "story"` container
+// and zero boards. The canary printed `✔ Pinterest boards list — boards=1`. The file
+// itself was overwritten in the gitignored `resources/` before it could be committed,
+// so this is the shape reconstructed from the verdict it produced — the id is the one
+// `parseBoardsPage` yielded from it, and everything else is minimal on purpose.
+const boardsPlaceholder = {
+  resource_response: {
+    status: "success",
+    code: 0,
+    message: "ok",
+    endpoint_name: "v3_board_pins",
+    http_status: 200,
+    data: [{ type: "story", id: "6733671870646100908", story_type: "board_ideas_preview_detailed" }],
+    bookmark: "SAMPLE_CURSOR_TOKEN==",
+  },
+};
+
+// The real thing, composed from the shape of a live `v3_user_profile_boards_feed`
+// capture: `data[]` is N `type: "board"` rows, each carrying a name and a `/user/slug/`
+// url. Four rows, because the live capture has four and a one-row list could not tell a
+// per-entry rule from a whole-page one.
+const boardsListPage = {
+  resource_response: {
+    status: "success",
+    code: 0,
+    message: "ok",
+    endpoint_name: "v3_user_profile_boards_feed",
+    http_status: 200,
+    data: [
+      { type: "board", id: "1000000000000000001", name: "Sample One", url: "/sampleuser/sample-one/" },
+      { type: "board", id: "1000000000000000002", name: "Sample Two", url: "/sampleuser/sample-two/" },
+      { type: "board", id: "1000000000000000003", name: "Sample Three", url: "/sampleuser/sample-three/" },
+      { type: "board", id: "1000000000000000004", name: "Sample Four", url: "/sampleuser/sample-four/" },
+    ],
+    bookmark: "SAMPLE_CURSOR_TOKEN==",
+  },
+};
+
+const clone = (json) => JSON.parse(JSON.stringify(json));
+
+test("checkBoards FLAGS the board_ideas_preview_detailed placeholder (the wrong response)", () => {
+  const result = checkBoards(boardsPlaceholder);
+  assert.equal(result.ok, false, "a story container is not a boards list");
+  assert.ok(result.problems.some((p) => /is this a boards list at all/.test(p)),
+    JSON.stringify(result.problems));
+  // The story is a declared non-board, so it never reaches `boards` — the count that
+  // read `boards=1` and passed now reads 0, and the module is reported beside it so the
+  // operator can see WHY rather than mistaking it for an empty account.
+  assert.equal(result.signals.boards, 0);
+  assert.equal(result.signals.entries, 1);
+  assert.equal(result.signals.modules, 1);
+});
+
+test("checkBoards passes a real-shaped boards list of named, addressable boards", () => {
+  const result = checkBoards(boardsListPage);
+  assert.equal(result.ok, true, JSON.stringify(result.problems));
+  assert.equal(result.problems.length, 0);
+  assert.equal(result.signals.entries, 4);
+  assert.equal(result.signals.modules, 0);
+  assert.equal(result.signals.boards, 4);
+  assert.equal(result.signals.named, 4);
+  assert.equal(result.signals.addressable, 4);
+});
+
+test("checkBoards flags boards that lost their url (unsweepable, buildBoardFeedURL needs it)", () => {
+  const drifted = clone(boardsListPage);
+  for (const board of drifted.resource_response.data) delete board.url;
+  const result = checkBoards(drifted);
+  assert.equal(result.ok, false);
+  assert.ok(result.problems.some((p) => /4 of 4 boards have no url/.test(p)),
+    JSON.stringify(result.problems));
+  // Still four parsed boards with four names — the failure is precisely the missing
+  // field, not a collapse of the whole page, which is what makes the message actionable.
+  assert.equal(result.signals.boards, 4);
+  assert.equal(result.signals.named, 4);
+  assert.equal(result.signals.addressable, 0);
+});
+
+test("checkBoards flags boards that lost their name (nothing could label them)", () => {
+  const drifted = clone(boardsListPage);
+  for (const board of drifted.resource_response.data) delete board.name;
+  const result = checkBoards(drifted);
+  assert.equal(result.ok, false);
+  assert.ok(result.problems.some((p) => /4 of 4 boards have no name/.test(p)),
+    JSON.stringify(result.problems));
+  assert.equal(result.signals.named, 0);
+  assert.equal(result.signals.addressable, 4);
+});
+
+test("checkBoards flags ONE board of four losing its url (partial degradation)", () => {
+  // The rule is "every board", not "some board", and this is what makes that
+  // load-bearing: with a `some` rule, three good rows would cover for the fourth and a
+  // list that is 75% sweepable would print ✔. That is the same silent-degradation shape
+  // `checkBoardFeed`'s denominator exists for — "24 of 25 mapped" must not read as ✔.
+  const drifted = clone(boardsListPage);
+  delete drifted.resource_response.data[2].url;
+  const result = checkBoards(drifted);
+  assert.equal(result.ok, false);
+  assert.ok(result.problems.some((p) => /1 of 4 boards have no url/.test(p)),
+    JSON.stringify(result.problems));
+  assert.equal(result.signals.addressable, 3);
+});
+
+test("checkBoards flags ONE board of four losing its name (partial degradation)", () => {
+  const drifted = clone(boardsListPage);
+  delete drifted.resource_response.data[2].name;
+  const result = checkBoards(drifted);
+  assert.equal(result.ok, false);
+  assert.ok(result.problems.some((p) => /1 of 4 boards have no name/.test(p)),
+    JSON.stringify(result.problems));
+  assert.equal(result.signals.named, 3);
+});
+
+test("checkBoards flags a partial parse rather than reporting a smaller account", () => {
+  // One of four rows still declares `type: "board"` but has lost its id, so the parser
+  // drops it. `boards=3` on its own reads as an account with three boards; the
+  // denominator is what turns it into drift.
+  const drifted = clone(boardsListPage);
+  delete drifted.resource_response.data[1].id;
+  const result = checkBoards(drifted);
+  assert.equal(result.ok, false);
+  assert.ok(result.problems.some((p) => /1 of 4 board entries failed to parse/.test(p)),
+    JSON.stringify(result.problems));
+  assert.equal(result.signals.boards, 3);
+});
+
+test("checkBoards tolerates a boards list Pinterest sent without a `type` on its rows", () => {
+  // The fallback direction, pinned: an untyped entry counts as a board, so a rename of
+  // `type` surfaces through the name/url rules instead of silently emptying the list.
+  const untyped = clone(boardsListPage);
+  for (const board of untyped.resource_response.data) delete board.type;
+  const result = checkBoards(untyped);
+  assert.equal(result.ok, true, JSON.stringify(result.problems));
+  assert.equal(result.signals.boards, 4);
+  assert.equal(result.signals.modules, 0);
+});
+
+test("checkBoards flags a boards list that is entirely non-board modules", () => {
+  // The placeholder generalised: whatever the module is called, a page of nothing but
+  // modules is not a boards list.
+  const allModules = clone(boardsListPage);
+  for (const board of allModules.resource_response.data) board.type = "story";
+  const result = checkBoards(allModules);
+  assert.equal(result.ok, false);
+  assert.ok(result.problems.some((p) => /no boards among 4 entries/.test(p)),
+    JSON.stringify(result.problems));
+  assert.equal(result.signals.modules, 4);
+});
+
+// MARK: - checkRednoteBoard (098 T3)
+//
+// These tests prove the INVARIANTS are right against synthetic pages shaped like the real
+// one: each one BREAKS a page in a specific way and asserts the check says so, which no
+// healthy capture can demonstrate. The other half — that the invariants match what rednote
+// actually sends — is the canary's, and since 098 T4 it runs over a committed fixture
+// (`rednote-board-live.json`) rather than being reported as awaited.
+
+/** A board-feed page in the real envelope, with the real "empty string" conventions. */
+const rednotePage = (notes, { hasMore = true, cursor = "cur1" } = {}) =>
+  ({ code: 0, success: true, msg: "成功", data: { has_more: hasMore, notes, cursor } });
+
+const rednoteRow = (id, over = {}) => ({
+  note_id: id, type: "normal", display_title: "t", xsec_token: "tok",
+  user: { user_id: "u", nick_name: "Someone" },
+  cover: {
+    file_id: "", url: "", width: 900, height: 1200,
+    url_pre: `http://sns-web-i10.rednotecdn.com/202609131332/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/${id}!nc_n_webp_prv_1`,
+    url_default: `http://sns-web-i10.rednotecdn.com/202609131332/b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2/${id}!nc_n_webp_mw_1`,
+    info_list: [],
+  },
+  ...over,
+});
+
+test("checkRednoteBoard passes a healthy board page", () => {
+  const result = checkRednoteBoard(rednotePage([rednoteRow("a"), rednoteRow("b")]));
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.signals, { notes: 2, items: 2, hasMore: true });
+});
+
+test("checkRednoteBoard catches a row that stopped yielding a cover", () => {
+  // The drift that matters most: `cover.url` is "" on every live row, so the sweep depends
+  // entirely on url_pre / url_default / info_list. Rename those and every item vanishes.
+  const broken = rednoteRow("b");
+  broken.cover = { file_id: "", url: "", info_list: [] };
+  const result = checkRednoteBoard(rednotePage([rednoteRow("a"), broken]));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /mapped 1 of 2 notes/);
+});
+
+test("checkRednoteBoard catches a rewrite that stops reaching the unsigned original", () => {
+  const row = rednoteRow("a");
+  // A key rule that no longer strips the signing prefix leaves us on the signed host.
+  row.cover.url_default = "http://sns-web-i10.rednotecdn.com/onlyone";
+  row.cover.url_pre = "";
+  const result = checkRednoteBoard(rednotePage([row]));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /not an unsigned origin-host url/);
+});
+
+// BOTH spellings of the rendering directive, because until 496 the canary asked only about
+// `!`. A live `board/info` response serves every cover as `?imageView2/2/w/540/format/jpg/
+// q/75` — measured 35-57x smaller than the same key bare — and the check could not see it.
+//
+// The inputs below are the drift this actually guards against: a rewrite that no longer
+// REACHES the url, which is 483's exact scenario (a moved CDN host switches
+// `toRednoteOriginal` off wholesale and it hands the thumbnail back untouched). A correct
+// rewrite cannot produce a surviving directive on a url it does recognise, so that half is
+// pinned on the predicate itself in `extractors.test.js`.
+test("checkRednoteBoard catches a rendering directive the rewrite never reached", () => {
+  const withSuffix = rednoteRow("a");
+  // Already on the origin host, so the origin-host rule passes and the `!` is the finding.
+  withSuffix.cover.url_default = `http://${REDNOTE_ORIGIN_HOST}/keyA!nc_n_webp_mw_1`;
+  withSuffix.cover.url_pre = "";
+  assert.match(
+    checkRednoteBoard(rednotePage([withSuffix])).problems.join(" "),
+    /transform directive survived/);
+
+  const withQuery = rednoteRow("b");
+  // A cover moved off the CDN the rewrite knows: it comes back untouched, thumbnail and
+  // all, and "it is not on the origin host" alone does not say the capture is 35x small.
+  withQuery.cover.url_default = "https://sns-i11.moved.example/keyB?imageView2/2/w/540/format/jpg/q/75";
+  withQuery.cover.url_pre = "";
+  assert.match(
+    checkRednoteBoard(rednotePage([withQuery])).problems.join(" "),
+    /transform directive survived/);
+});
+
+test("checkRednoteBoard catches a lost author name", () => {
+  const result = checkRednoteBoard(rednotePage([rednoteRow("a", { user: { user_id: "u" } })]));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /no authorName/);
+});
+
+test("checkRednoteBoard verifies the terminator and the loop guard independently of input", () => {
+  // Both are asserted inside the check against synthesized pages, so they hold whatever
+  // capture is fed in — including a middle page that shows neither.
+  const result = checkRednoteBoard(rednotePage([rednoteRow("a")], { hasMore: true, cursor: "c" }));
+  assert.deepEqual(result.problems, []);
+});
+
+// MARK: - checkRednoteNoteDetail (098 T5a)
+//
+// Same split as above: these prove the INVARIANTS fire, against notes broken on purpose;
+// the canary proves they match what rednote sends, over `rednote-note-detail.json`.
+
+/** A note-detail body in the real envelope (`data.items[0].note_card`). */
+const rednoteNote = (over = {}) => ({
+  code: 0, success: true, msg: "成功",
+  data: {
+    cursor_score: "", current_time: 1789278454517,
+    items: [{
+      id: "nd1", model_type: "note", ignore: false,
+      note_card: {
+        note_id: "nd1", type: "normal", title: "t", desc: "d",
+        user: { user_id: "u", nickname: "Someone" },
+        image_list: [rednoteDetailImage(1), rednoteDetailImage(2)],
+        tag_list: [], at_user_list: [], interact_info: {},
+        ...over,
+      },
+    }],
+  },
+});
+
+/** The live key shape: `<timestamp>/<signature>/oss-sg/spectrum/<id>`. */
+function rednoteDetailImage(n, over = {}) {
+  return {
+    live_photo: false, width: 1242, height: 1660, url: "", stream: {}, info_list: [],
+    file_id: `oss-sg/spectrum/key${n}`,
+    url_pre: `http://sns-web-i10.rednotecdn.com/202609131332/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/oss-sg/spectrum/key${n}!nd_prv_wlteh_webp_3`,
+    url_default: `http://sns-web-i10.rednotecdn.com/202609131332/b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2/oss-sg/spectrum/key${n}!nd_dft_wlteh_webp_3`,
+    ...over,
+  };
+}
+
+test("checkRednoteNoteDetail passes a healthy note and reports its fan-out", () => {
+  const result = checkRednoteNoteDetail(rednoteNote());
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.signals, { images: 2, items: 2, noteType: "normal" });
+});
+
+test("checkRednoteNoteDetail catches an image that stopped yielding a url", () => {
+  // The fan-out IS the feature here — `image_list` is the only place a note's carousel
+  // exists — so an entry that silently stops resolving costs a picture nobody notices.
+  const result = checkRednoteNoteDetail(rednoteNote({
+    image_list: [rednoteDetailImage(1),
+      rednoteDetailImage(2, { url_pre: "", url_default: "", info_list: [] })],
+  }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /fanned out 1 of 2 images/);
+});
+
+test("checkRednoteNoteDetail catches a rewrite that stops reaching the unsigned original", () => {
+  const result = checkRednoteNoteDetail(rednoteNote({
+    image_list: [rednoteDetailImage(1, {
+      url_pre: "", url_default: "http://sns-web-i10.rednotecdn.com/onlyone",
+    })],
+  }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /not an unsigned origin-host url/);
+});
+
+test("checkRednoteNoteDetail catches two images collapsing onto ONE url", () => {
+  // The failure mode a per-item URL check cannot see: nine entries, one picture, eight
+  // items dedup-skipped as duplicates of each other.
+  const same = rednoteDetailImage(1);
+  const result = checkRednoteNoteDetail(rednoteNote({ image_list: [same, { ...same }] }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /SAME mediaUrl/);
+});
+
+test("checkRednoteNoteDetail catches a lost author name", () => {
+  // A null author fails nothing loudly on its own, which is why it is an invariant.
+  const result = checkRednoteNoteDetail(rednoteNote({ user: { user_id: "u" } }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /no authorName/);
+  // But the FEED's spelling is not a drift: `rednoteAuthor` deliberately reads both
+  // `nickname` and `nick_name` (098 D6), so a note arriving with the other one is still a
+  // healthy note. Pinned here because the obvious test to write is the opposite one.
+  assert.deepEqual(
+    checkRednoteNoteDetail(rednoteNote({ user: { user_id: "u", nick_name: "x" } })).problems, []);
+});
+
+test("checkRednoteNoteDetail reports a video note as a capture problem, not a pass", () => {
+  // A video-bearing note is refused by the parser (T6 is blocked on a real capture), so a
+  // canary run over one would see zero items. It must say WHY rather than read as drift in
+  // the image path — and it must never read as ok.
+  const result = checkRednoteNoteDetail(rednoteNote({ type: "video" }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /no items fanned out from 2 images \(video\)/);
+});
+
+test("checkRednoteNoteDetail verifies the degradation contract independently of input", () => {
+  // Asserted inside the check against a synthesized absent note, so it holds whatever
+  // capture is fed in — a healthy one can never exercise it.
+  assert.deepEqual(checkRednoteNoteDetail(rednoteNote()).problems, []);
+});
+
+// MARK: - checkRednoteVideo (098 T6b)
+//
+// Same split again: these break a ladder on purpose and assert the check says so. The
+// canary proves the invariants match what rednote sends, over `rednote-note-video.json`.
+
+/** A `type: "video"` note in the real envelope: a poster in `image_list`, the ladder under
+ * `video.media.stream`, and `media_v2` present as the JSON STRING it really is. */
+const rednoteVideoNote = (stream = { EF4: [videoRung()], EF5: [], EF6: [], EF7: [] }, over = {}) => ({
+  code: 0, success: true, msg: "成功",
+  data: {
+    cursor_score: "", current_time: 1789278454517,
+    items: [{
+      id: "nv1", model_type: "note", ignore: false,
+      note_card: {
+        note_id: "nv1", type: "video", title: "t", desc: "d",
+        user: { user_id: "u", nickname: "Someone" },
+        image_list: [rednoteDetailImage(1)],
+        video: { media: { video_id: 1, video: { stream_types: [258] }, stream }, media_v2: "{}" },
+        tag_list: [], at_user_list: [], interact_info: {},
+        ...over,
+      },
+    }],
+  },
+});
+
+/** The live rung's shape (098 T6b), synthetic ids. */
+function videoRung(over = {}) {
+  return {
+    video_codec: "EF4", stream_type: 258, format: "mp4", width: 720, height: 960, size: 9443827,
+    master_url: "http://sns-v11.rednotecdn.com/stream/1/110/258/aaa_258.mp4",
+    backup_urls: ["http://sns-v27.rednotecdn.com/stream/1/110/258/aaa_258.mp4"],
+    ...over,
+  };
+}
+
+test("checkRednoteVideo passes a healthy ladder and reports the rung it would take", () => {
+  const result = checkRednoteVideo(rednoteVideoNote());
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.signals, {
+    noteType: "video", buckets: 4, populated: 1, rungs: 1, candidates: 2,
+    codecs: "EF4", bucket: "EF4", streamType: 258, posters: 1,
+  });
+});
+
+test("checkRednoteVideo catches the ladder path moving", () => {
+  // `video.media.stream` is the whole input. If rednote nests it elsewhere the sweep loses
+  // every video note silently, degrading each to its cover with no stated reason.
+  const result = checkRednoteVideo(rednoteVideoNote(undefined, { video: { media: {} } }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /no video\.media\.stream/);
+});
+
+test("checkRednoteVideo catches a chosen rung that is an obfuscated ef* codec", () => {
+  // THE ef51 ASSERTION — the thing 020 asked for by name, because its manual run only found
+  // out after downloading. A mixed ladder must drop the ef rung; an ef-only one must refuse.
+  const mixed = checkRednoteVideo(rednoteVideoNote({
+    EF4: [videoRung({ video_codec: "ef51" })], EF5: [videoRung({ video_codec: "EF5" })],
+  }));
+  assert.deepEqual(mixed.problems, [], "an ef rung beside a usable one is dropped, not a drift");
+  assert.equal(mixed.signals.bucket, "EF5");
+  const only = checkRednoteVideo(rednoteVideoNote({ EF4: [videoRung({ video_codec: "ef51" })] }));
+  assert.equal(only.ok, false);
+  assert.match(only.problems.join(" "), /undecodable_codec/);
+});
+
+test("checkRednoteVideo catches a rewrite that starts mangling an unsigned stream url", () => {
+  // 487 fixed `toRednoteOriginal` to leave `/stream/1/110/258/…` alone (input 206, rewrite
+  // 404). A depth-based rule would eat `stream/1` as signing material all over again.
+  const signed = "http://sns-web-i10.rednotecdn.com/202609131332/a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1/stream/x_258.mp4";
+  const result = checkRednoteVideo(rednoteVideoNote({
+    EF4: [videoRung({ master_url: signed, backup_urls: [] })],
+  }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /rewrote an unsigned stream url/);
+});
+
+test("checkRednoteVideo catches a candidate that leaves the rednote CDN", () => {
+  const result = checkRednoteVideo(rednoteVideoNote({
+    EF4: [videoRung({ master_url: "https://evil.example.com/a.mp4", backup_urls: [] })],
+  }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /not on the rednote CDN/);
+});
+
+test("checkRednoteVideo catches a video note that lost its poster", () => {
+  // The cover pass already ingested the poster as `<note_id>`; if `image_list` empties, the
+  // note has nothing to degrade TO when the ladder refuses.
+  const result = checkRednoteVideo(rednoteVideoNote(undefined, { image_list: [] }));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /carries no image_list/);
+});
+
+test("checkRednoteVideo verifies the refusal contract independently of input", () => {
+  // Asserted inside the check against synthesized ladders, so both rules hold whatever
+  // capture is fed in — a healthy note exercises neither.
+  assert.deepEqual(checkRednoteVideo(rednoteVideoNote()).problems, []);
 });
 
 // MARK: - checkThreadDetail ([090] 1A)

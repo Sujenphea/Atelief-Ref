@@ -3,7 +3,12 @@
   "name": "Atelier Capture",
   "version": "0.1.0",
   "description": "Save the current post/pin (with provenance) to ref-atelier.",
-  "permissions": ["activeTab", "scripting", "storage", "contextMenus"],
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "contextMenus"
+  ],
   "host_permissions": [
     "http://127.0.0.1/*",
     "*://*.x.com/*",
@@ -26,22 +31,60 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://*.x.com/*", "*://*.twitter.com/*"],
-      "js": ["src/hook-core.js", "src/twitter-hook.js"],
+      "matches": [
+        "*://*.x.com/*",
+        "*://*.twitter.com/*"
+      ],
+      "js": [
+        "src/hook-core.js",
+        "src/twitter-hook.js"
+      ],
       "world": "MAIN",
       "run_at": "document_start"
     },
     {
-      "matches": ["*://*.x.com/*", "*://*.twitter.com/*", "*://*.pinterest.com/*", "*://*.pinterest.co.uk/*", "*://*.instagram.com/*"],
-      "js": ["src/bulk-loader.js"],
+      "matches": [
+        "*://*.x.com/*",
+        "*://*.twitter.com/*",
+        "*://*.pinterest.com/*",
+        "*://*.pinterest.co.uk/*",
+        "*://*.instagram.com/*",
+        "*://*.rednote.com/*",
+        "*://*.xiaohongshu.com/*"
+      ],
+      "js": [
+        "src/bulk-loader.js"
+      ],
       "world": "ISOLATED",
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://*.rednote.com/*",
+        "*://*.xiaohongshu.com/*"
+      ],
+      "js": [
+        "src/hook-core.js",
+        "src/rednote-hook.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["src/*.js"],
-      "matches": ["*://*.x.com/*", "*://*.twitter.com/*", "*://*.pinterest.com/*", "*://*.pinterest.co.uk/*", "*://*.instagram.com/*"]
+      "resources": [
+        "src/*.js"
+      ],
+      "matches": [
+        "*://*.x.com/*",
+        "*://*.twitter.com/*",
+        "*://*.pinterest.com/*",
+        "*://*.pinterest.co.uk/*",
+        "*://*.instagram.com/*",
+        "*://*.rednote.com/*",
+        "*://*.xiaohongshu.com/*"
+      ]
     }
   ],
   "action": {

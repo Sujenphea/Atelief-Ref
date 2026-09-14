@@ -16,8 +16,9 @@ import { isAllowedMediaHost, isAllowedBundleHost } from "./media-hosts.js";
  * `relay` runs `ingestOne` (the SAME per-item tail single-item capture uses, C5) so
  * a bulk item and a manual capture ingest identically; the content script classifies
  * the returned result into an outcome. Throws on an unknown type (the caller reports
- * it back as an error reply). Video stays opt-in: `mp4Url` is relayed only when the
- * controller asked to resolve video.
+ * it back as an error reply). Video stays opt-in: `mp4Url` — and rednote's ordered
+ * `videoCandidates` ladder behind it — are relayed only when the controller asked to
+ * resolve video.
  */
 export async function handleBulkMessage(message, {
   token, fetchImpl, ingestOne, openJob, fetchKnownSources, completeJob,
@@ -42,8 +43,16 @@ export async function handleBulkMessage(message, {
       // never a network call to an arbitrary host.
       const provenance = message.provenance || {};
       const mp4Url = message.mp4Url || null;
+      // The rest of the video ladder (098 D5): every rung's `master_url` and its
+      // `backup_urls[]`, ordered, which `ingestOne` walks when a 422 says the rung ahead of
+      // it is undecodable. Every one of them is a url the SW will fetch in the
+      // authenticated session, so every one goes through the SAME guard — a ladder is
+      // exactly as page-supplied as the still urls beside it.
+      const videoCandidates = Array.isArray(message.videoCandidates) ? message.videoCandidates : [];
       const platform = provenance.platform;
-      const candidates = [provenance.mediaUrl, provenance.mediaUrlFallback, mp4Url].filter(Boolean);
+      const candidates = [
+        provenance.mediaUrl, provenance.mediaUrlFallback, mp4Url, ...videoCandidates,
+      ].filter(Boolean);
       const blocked = candidates.find((url) => !isAllowedMediaHost(platform, url));
       if (blocked) {
         return { status: "blocked-host", message: `refused non-CDN media host: ${blocked}` };
@@ -51,6 +60,7 @@ export async function handleBulkMessage(message, {
       return await ingestOne(provenance, {
         token,
         mp4Url,
+        videoCandidates,
         content: message.content || null, // tweet content descriptor (003 · C3 bulk)
         jobId: message.jobId,
         sourceId: message.sourceId,

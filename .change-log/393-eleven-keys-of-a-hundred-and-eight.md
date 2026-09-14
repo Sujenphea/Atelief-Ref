@@ -88,7 +88,7 @@ reach them: display names and handles (`framer` is indistinguishable from an enu
 viewer-context subtrees (`AUK` and `female` are shape-identical to enums). Both **collect**
 by key and then **replace globally by value**, so they only ever add coverage. Hosts are
 kept deliberately — the mappers branch on them — except for locale subdomains, so
-`REDACTED` normalises to `www.pinterest.com`.
+`nz.pinterest.com` normalises to `www.pinterest.com`.
 
 Final audit: **0 leaked** on both captures, every survivor a schema constant, read
 individually.

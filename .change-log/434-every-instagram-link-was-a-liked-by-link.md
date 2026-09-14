@@ -65,7 +65,7 @@ the canonical permalink and will not dedup against the stored record. Because th
 link was the only shape the feed offered, this plausibly affects *most* Instagram captures
 taken via a feed right-click rather than a few.
 
-**Still open, and not settled by this:** Pinterest served `REDACTED`, while
+**Still open, and not settled by this:** Pinterest served `nz.pinterest.com`, while
 `bulk-pinterest.js` composes from whatever `host` the response carried and a desktop capture
 would typically be on `www.pinterest.com`. Same pin, two `originalURL`s, by country
 subdomain rather than by path. Not touched — it is a different fork with a different fix

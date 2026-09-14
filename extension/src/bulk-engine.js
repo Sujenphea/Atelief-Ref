@@ -71,6 +71,9 @@ function isRetryableHttp(status) {
  * `result.httpStatus` when a caller supplies it (forward-compatible — absent
  * today, so the safe status-based defaults apply and sharpen for free later):
  *   saved            → ingested / deduped
+ *   skipped          → skipped (a typed per-item skip the relay decided — today: every
+ *                      video candidate refused, with no still to fall back to). Never a
+ *                      failure, so it cannot mark the sweep unclean.
  *   unreachable      → retryableFailed + HALT (the local app is down → pause the
  *                      whole sweep; the user resumes when it's back)
  *   fetch-error      → retryableFailed (transient CDN hiccup / throttle). A hard
@@ -100,6 +103,19 @@ export function classifyIngestResult(result) {
         appStatus: app,
       };
     }
+    case "skipped":
+      // A TYPED SKIP from the relay (098 D5 / 020 Risks): every video candidate was refused
+      // and there was no still to fall back to, so this item captured nothing — on purpose.
+      // It is NOT a failure: a permanentFailed would mark the sweep unclean and wall the
+      // note off behind the next run's known-set optimisations, and a retryableFailed would
+      // spend four backoff attempts re-walking a ladder that just said no. 020 names the
+      // outcome ("record it as a typed skip, do not fail the sweep") and this is where the
+      // engine agrees with it.
+      //
+      // It joins the dedup skips in `counts.skipped`, and therefore in the consecutive-skip
+      // run that arms Instagram's early-stop. Harmless: that optimisation is Instagram-only
+      // and Instagram video items always carry a poster, so this arm cannot fire there.
+      return { outcome: OUTCOMES.skipped, signal: "continue" };
     case "unreachable":
       return { outcome: OUTCOMES.retryableFailed, signal: "halt" };
     case "fetch-error":
@@ -171,11 +187,19 @@ export async function runSweep(driver, input, {
     ...config,
   };
 
+  // A driver that declares `resumable: "scroll"` (an intercept source) CANNOT seek to a
+  // cursor — it reads whatever the page fetches, and the page is driven by scrolling
+  // (098 R1). Persisting a cursor for one was writing a resume token nothing would ever
+  // read back, which reads as a working resume in the checkpoint and is not one. So for
+  // those drivers the cursor is neither seeded nor stored; the checkpoint still carries
+  // `counts` and (via the caller) `jobId`, which are the parts that do get used.
+  const scrollResumable = driver && driver.resumable === "scroll";
+
   // Resume: a prior checkpoint's cursor seeds enumeration; the app's dedup + the
   // known-set make any re-processed overlap idempotent, so an approximate resume
   // point is safe — it never double-ingests, only re-skips.
   let startCursor = null;
-  if (storage && checkpointKey) {
+  if (!scrollResumable && storage && checkpointKey) {
     const saved = await storage.load(checkpointKey);
     if (saved && saved.cursor != null) startCursor = saved.cursor;
   }
@@ -256,7 +280,9 @@ export async function runSweep(driver, input, {
     }
     if (advanced && storage && checkpointKey && committedSeq > lastSavedSeq) {
       try {
-        await storage.save(checkpointKey, { cursor: committedCursor, counts: { ...counts } });
+        await storage.save(checkpointKey, {
+          cursor: scrollResumable ? null : committedCursor, counts: { ...counts },
+        });
         lastSavedSeq = committedSeq; // mark saved ONLY on success
       } catch (error) {
         // A checkpoint write failure must NOT abort the sweep (8A) — it's a resume

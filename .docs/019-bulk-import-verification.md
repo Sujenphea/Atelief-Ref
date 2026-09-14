@@ -142,7 +142,7 @@ distinct blobs = 76 sources, 0 partials. The full multi-page happy path is prove
 ### T2 — Provenance correctness — ✅ DONE (2026-07-06, data-verified)
 **Goal:** ingested assets carry the right origin metadata.
 **Result:** 76 ingested Pinterest sources checked. Each carries `platform=pinterest`,
-`original_url` = the canonical pin URL (`https://REDACTED/pin/{id}/`), and
+`original_url` = the canonical pin URL (`https://nz.pinterest.com/pin/{id}/`), and
 `author_handle`/`author_name` (`sujenphea0843` / `sujen`). The media URL isn't
 persisted (transient download detail — the `toOriginals` rewrite is extension-unit
 covered), so verified indirectly via **dimensions**: widths span 300–7500px (avg 1260),

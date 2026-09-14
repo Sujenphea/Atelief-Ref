@@ -7,15 +7,15 @@
       "note": "queryIds rotate ~2-4 weeks; Bookmarks has its own. features blob is inherited via MAIN-world interception, never hardcoded."
     },
     "xTimeline": {
-      "capturedAt": "2026-08-13",
+      "capturedAt": "2026-09-14",
       "staleAfterDays": 30,
       "op": "Bookmarks",
       "queryId": "iblrFnKr6PZUR-dWpfXG6g",
       "fixture": "x-bookmarks-live.json",
-      "note": "The canary's OWN X capture, separate from the hand-composed x-bookmarks.json the unit tests pin against (see scripts/drift-check.js FIXTURE.x). Captured live 2026-08-13 from a real bookmarks timeline: 3 tweets (1 video, 1 four-photo, 1 text-only) + Top/Bottom cursors, parsing to tweetCount=3 mediaItems=7. Sanitized by a key-INDEPENDENT value sweep (profile/media/video/t.co urls, every >=15-digit snowflake, every *_count, view counts, handles, names, bios, texts, cursors, node ids), then audited by checking every leaf string of the original against the output — what survives is schema constants plus video bitrates, which are load-bearing (the mapper picks the highest-bitrate MP4)."
+      "note": "The canary's OWN X capture, separate from the hand-composed x-bookmarks.json the unit tests pin against (see scripts/drift-check.js FIXTURE.x). Re-captured live 2026-09-14 from a real bookmarks timeline: 7 tweets + Top/Bottom cursors, parsing to tweetCount=7 mappedTweets=7 mediaItems=12. The `queryId` above is carried over from 2026-08-13 and this capture cannot confirm it — a response body does not name the operation it answered; it is scraped from the bundle at sweep time and is on the re-verify list below for that reason. THE FIRST X FIXTURE HERE PRODUCED BY THE SANITIZER RATHER THAN BY HAND, and doing that exposed two things the sweep had never been asked to survive: every GraphQL `__typename` / `entryType` / `cursorType` came back `SAMPLECODE1` (the parser compares them to literals, so the page parsed to zero tweets), and every `rest_id` came back `+100000002` because `isPhone` accepts a bare run of seven digits — which the canary's own `/status\\/(\\d+)/` then could not match. Both are fixed in scripts/sanitize-capture.js (498). audit-capture reports LEAKED: 0; 65 real `screen_name` handles are synthetic for the first time."
     },
     "xThread": {
-      "capturedAt": "2026-08-13",
+      "capturedAt": "2026-09-14",
       "staleAfterDays": 30,
       "op": "TweetDetail",
       "queryId": "XMOz5h24KAZ86qKffKTLdQ",
@@ -24,20 +24,47 @@
       "replyLink": "legacy.in_reply_to_status_id_str",
       "authorPath": "core.user_results.result.core.screen_name (legacy.screen_name fallback)",
       "entryShapes": "focal tweet as a bare TimelineTimelineItem; continuations nested inside a conversationthread MODULE \u2014 collectConversationTweets walks generically so either can move alone",
-      "note": "Live-validated 2026-08-13 against a real 29-tweet conversation: a 5-tweet self-thread, 12 author-replies-to-commenters, 13 authors. The capture ALSO caught a live break \u2014 X no longer ships api.*.js and the operation->queryId table now lives in main.*.js, so the old api-only bundle match found nothing and expansion was silently off. features={} was accepted with no repair round on this date. Fixture is sanitized: handles, display names, bios, ids, node ids, media/profile/t.co urls and post text are all synthetic; keys, nesting and reply structure are verbatim."
+      "note": "Re-captured 2026-09-14 against a real 28-tweet conversation: a 4-tweet self-thread and 27 tweets carrying a parent, all 28 with an author, mapping to 4 grouped items. The 2026-08-13 capture that preceded it ALSO caught a live break \u2014 X no longer ships api.*.js and the operation->queryId table now lives in main.*.js, so the old api-only bundle match found nothing and expansion was silently off; the `queryId` above is from that day and a response body cannot reconfirm it. Instruction envelope is unchanged: TimelineClearCache, TimelineAddEntries, TimelineTerminateTimeline. Fixture is sanitized by the key-INDEPENDENT value sweep: handles, display names, bios, locations, ids, base64 node ids, `media_key` composites, media/profile/t.co urls, scheme-less display_urls and post text are all synthetic; keys, nesting, reply structure and the envelope's type discriminators are verbatim. audit-capture reports LEAKED: 0."
     },
     "pinterest": {
-      "capturedAt": "2026-08-14",
+      "capturedAt": "2026-09-14",
       "staleAfterDays": 30,
-      "appVersion": "be501f2",
-      "appVersionsSeen": ["1df0da9 (2026-07-03)", "194583e (2026-08-14 08:40)", "be501f2 (2026-08-14 12:51)"],
+      "appVersion": "cad034b",
+      "appVersionsSeen": ["1df0da9 (2026-07-03)", "194583e (2026-08-14 08:40)", "be501f2 (2026-08-14 12:51)", "cad034b (2026-09-14 13:27)"],
       "pwsHandler": "www/[username]/[slug].js",
       "boardsPwsHandler": "www/[username].js",
       "fixtures": ["pinterest-boards-live.json", "pinterest-boardfeed-live.json"],
-      "note": "Re-verified live 2026-08-14. X-APP-VERSION DRIFTS INTRADAY, not on a release cadence: 194583e and be501f2 were observed FOUR HOURS APART on the same day (and 1df0da9 42 days before). Treat the value here as a sample, never a constant — it is scraped at runtime and never sent from here. The SOLE 403 gatekeeper on /resource/ is still x-pinterest-pws-handler (019 T10, reconfirmed): omit it -> 403, send it -> 200. NEW: the value is presence-checked, NOT route-matched — BoardsResource returned 200 for BOTH 'www/[username].js' and 'www/[username]/[slug].js', so the boards path is no longer blocked on discovering its own handler. Bracketed segments stay literal (never interpolated). Capture host was REDACTED, normalised to www.pinterest.com in the fixture."
+      "note": "Re-verified live 2026-09-14: 25 pins on the board feed (all 25 as bare `pin` rows — the 2026-08-14 capture put 24 of its pins inside ONE module, so modules=1 there and modules=0 here, and the mapper handles both) and 4 boards on the list. X-APP-VERSION DRIFTS INTRADAY, not on a release cadence: 194583e and be501f2 were observed FOUR HOURS APART on the same day (and 1df0da9 42 days before, cad034b a month after). Treat the value here as a sample, never a constant — it is scraped at runtime and never sent from here. The SOLE 403 gatekeeper on /resource/ is still x-pinterest-pws-handler (019 T10, reconfirmed): omit it -> 403, send it -> 200. NEW: the value is presence-checked, NOT route-matched — BoardsResource returned 200 for BOTH 'www/[username].js' and 'www/[username]/[slug].js', so the boards path is no longer blocked on discovering its own handler. Bracketed segments stay literal (never interpolated). Capture host was nz.pinterest.com, normalised to www.pinterest.com in the fixture."
+    },
+    "rednote": {
+      "capturedAt": "2026-09-13",
+      "staleAfterDays": 30,
+      "route": "/api/sns/web/v1/board/note",
+      "fixture": "rednote-board-live.json",
+      "originHost": "sns-i27.rednotecdn.com",
+      "note": "Board feed is GET //webapi.rednote.com/api/sns/web/v1/board/note?board_id=<24-hex>&num=30&cursor=<hex> \u2014 the XHR path reports it PROTOCOL-RELATIVE. Never requested by us: rednote signs every call from the URL + a live timestamp and a hand-signed attempt came back HTTP 461, so the page issues its own calls and the hook forwards them (098 D1). The capture is a MIDDLE page: 37 notes for num=30 (page size is not honoured), has_more true, and the next cursor is literally the LAST row's note_id. Row shape is nine keys with ONE cover \u2014 no imageList, no video, no stream \u2014 which is why K3a fans out one item per NOTE. cover.url and cover.file_id are \"\" on 37/37, so url_pre / url_default / info_list[WB_PRV|WB_DFT] are the only usable urls and a rename of those is what would silently empty a sweep. Cover keys are NOT all single-segment: 15/37 are <id>, 16/37 spectrum/<id>, 6/37 oss-sg/notes_pre_post/<id>, so the drop-the-first-two-segments key rule is load-bearing here, not only on note detail. Sanitized by the key-INDEPENDENT value sweep; the rednote CDN hosts, the path DEPTH and the !transform suffix survive by design (the rewrite is a no-op without them) and nothing else does \u2014 audit-capture reports LEAKED: 0."
+    },
+    "rednoteNoteDetail": {
+      "capturedAt": "2026-09-13",
+      "staleAfterDays": 30,
+      "route": "/api/sns/web/v1/feed",
+      "fixture": "rednote-note-detail.json",
+      "originHost": "sns-i27.rednotecdn.com",
+      "note": "Note detail is POST https://webapi.rednote.com/api/sns/web/v1/feed with body {source_note_id, image_formats, extra, xsec_source, xsec_token, need_translation} \u2014 signed exactly like the board feed, so it too is intercepted and never issued (098 D1). Envelope is data.items[0].note_card, NOT data.notes: the challenge recognizer takes the payload key as a parameter so one set of envelope rules serves both. The capture is one type:\"normal\" note with a 9-entry image_list, all 1242x1660, live_photo false, stream {}, and NO video key \u2014 T6 is still blocked on a type:\"video\" capture, and until one exists a video-bearing note is REFUSED (unsupported:\"video\") rather than fanned out, because its image_list is most likely the poster the cover pass already ingested under a different key. Fan-out is one item per image_list entry keyed <note_id>:<POSITION>, so a mid-list entry losing its url must not renumber the rest. image_list keys are oss-sg/spectrum/<id> \u2014 multi-segment, the shape the old last-segment rule 404'd on. title and desc exist ONLY here; the board row has only display_title. user.nickname here vs user.nick_name on the feed (098 D6). Sanitized by the key-INDEPENDENT value sweep with NO further changes needed \u2014 the rednote CDN host, the 5-segment path depth and the !transform suffix all survive by design and audit-capture reports LEAKED: 0."
+    },
+    "rednoteNoteVideo": {
+      "capturedAt": "2026-09-14",
+      "staleAfterDays": 30,
+      "route": "/api/sns/web/v1/feed",
+      "fixture": "rednote-note-video.json",
+      "ladderPath": "note_card.video.media.stream",
+      "buckets": ["EF4", "EF5", "EF6", "EF7"],
+      "streamTypeSeen": 258,
+      "streamTypeUndecodable": "330 (020's manual run — fourcc ef51)",
+      "note": "Note detail for a type:\"video\" note — the one artifact 098 had never had, captured 2026-09-14 from the SAME POST /api/sns/web/v1/feed route as rednoteNoteDetail and intercepted the same way (098 D1). The ladder is note_card.video.media.stream, an object of FOUR arrays keyed EF4/EF5/EF6/EF7 — and only EF4 is populated in this sample, so the bucket PREFERENCE ORDER in rednote-video.js is untested against live data and the fixture cannot answer for it. The one EF4 rung is stream_type 258, format mp4, 720x960, with a master_url on sns-v11 and one backup_urls entry on sns-v27 — same path, different shard. Those urls are served ALREADY UNSIGNED (/stream/1/110/258/<id>_258.mp4) and master_url was fetched live: 206, video/mp4. toRednoteOriginal must leave them alone (487); the canary asserts it. SELECT BY CODEC, NEVER BY SIZE — 020 rule 1, learned by taking the largest file and landing on a _330 whose MP4 fourcc was ef51, an obfuscated stream nothing but rednote's player decodes. That fourcc lives in the BYTES, not the JSON, and is NOT the EF-prefixed bucket name; the only pre-download guard possible is the codec assertion in checkRednoteVideo, and the real backstop is the HTTP 422 from /ingest-video. NEVER CHECKPOINT A STREAM LIST (020 B3 — the same note offered a different ladder minutes apart): withVideoCandidates attaches it NON-ENUMERABLY so JSON.stringify, structuredClone and object spread all drop it. video.media_v2 is a JSON STRING duplicating the whole media object — never parsed; the sanitizer flattens it to a placeholder, which is what makes that rule enforceable. The note's image_list is ONE entry, the poster, already ingested by the cover pass as <note_id>. Sanitized by the key-INDEPENDENT value sweep, which needed one change: an unsigned rednote CDN path is ROUTE, not identity, so its bare-word/short-number segments and the filename's _<stream_type> suffix are kept verbatim — without that the fixture was /00/00/00/00/SAMPLE.mp4 and proved nothing. audit-capture reports LEAKED: 0."
     },
     "instagram": {
-      "capturedAt": "2026-08-14",
+      "capturedAt": "2026-09-14",
       "staleAfterDays": 14,
       "route": "/api/v1/feed/saved/posts/",
       "fixture": "instagram-saved-live.json",
@@ -46,7 +73,7 @@
         "video": 2,
         "carousel": 8
       },
-      "note": "Saved feed is REST api/v1 (not GraphQL), re-verified 2026-08-14 with only x-ig-app-id + credentials:'include'. Fan-out (002 \u00b7 1A) keys on per-media `pk`; carousel children under carousel_media[]. Poster at image_versions2.candidates[0], reel video at video_versions[]. PAGINATION NOW FULLY CONFIRMED: page 1 came back more_available:true with next_max_id populated (a 120-char string) \u2014 the first non-terminal body ever captured \u2014 and feeding it back as ?max_id= returned 200 with 21 further posts. The response cursor field name is no longer inferred from convention. The live page is 1.84MB across 21 posts (108-128 keys per media); the fixture keeps 3 whole posts, one per media_type, byte-for-byte. The composed instagram-saved.json the unit tests use carries 11-13 keys per media, so it could never have answered the canary's question. IG drifts fast \u2014 14d window (vs X/Pinterest 30d)."
+      "note": "Saved feed is REST api/v1 (not GraphQL), re-verified 2026-09-14 with only x-ig-app-id + credentials:'include'. Fan-out (002 \u00b7 1A) keys on per-media `pk`; carousel children under carousel_media[]. Poster at image_versions2.candidates[0], reel video at video_versions[]. PAGINATION STILL CONFIRMED: more_available:true with next_max_id populated (a 120-char string), and the cursor field name is not inferred from convention. THE WHOLE PAGE IS THE FIXTURE NOW \u2014 all 21 posts (7 reels, 14 carousels; 108-128 keys per media), fanning out to 118 items with 38 videos, where the 2026-08-14 fixture kept 3 posts. The composed instagram-saved.json the unit tests use carries 11-13 keys per media, so it could never have answered the canary's question. This is the capture that found the composite-id hole (498): 87 distinct `<media_pk>_<user_pk>` values \u2014 `strong_id__`, `id`, `profile_pic_id`, `carousel_parent_id` \u2014 walked out of the sweep verbatim, and the 2026-08-14 raw had hidden it only by shipping 11-digit user pks that tripped the free-text length. audit-capture now reports LEAKED: 0. IG drifts fast \u2014 14d window (vs X/Pinterest 30d)."
     }
   }
 }

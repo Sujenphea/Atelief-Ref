@@ -11,7 +11,9 @@
 
 import { resolveSweepSpec, REASON_MESSAGE } from "./bulk-context.js";
 import { dispatchStart } from "./bulk-dispatch.js";
-import { sweepLabel, sweepWarning, startEnabled, launchOutcome } from "./popup-view.js";
+import {
+  sweepLabel, sweepWarning, startEnabled, launchOutcome, expansionOption,
+} from "./popup-view.js";
 import { browser } from "./browser.js";
 
 const els = {
@@ -22,6 +24,10 @@ const els = {
   acknowledge: document.getElementById("acknowledge"),
   videoRow: document.getElementById("videoRow"),
   resolveVideo: document.getElementById("resolveVideo"),
+  expandRow: document.getElementById("expandRow"),
+  expandNotes: document.getElementById("expandNotes"),
+  expandLabel: document.getElementById("expandLabel"),
+  expandDetail: document.getElementById("expandDetail"),
   start: document.getElementById("start"),
   status: document.getElementById("status"),
 };
@@ -41,33 +47,73 @@ function showReason(reason) {
   els.reason.textContent = REASON_MESSAGE[reason] || REASON_MESSAGE["not-supported-site"];
   els.start.disabled = true;
   els.videoRow.hidden = true;
+  els.expandRow.hidden = true;
+  els.expandDetail.hidden = true;
   els.warn.hidden = true;
   els.ackRow.hidden = true;
+}
+
+/** The spec as the user has currently configured it — the resolved spec plus the toggles.
+ * BOTH toggles are folded in HERE as well as at launch because the risk gate's copy depends
+ * on them (098 D8): the acknowledgement has to describe the sweep that will run, and on
+ * rednote the video toggle decides whether the 81 % of notes that are video get opened. */
+function configuredSpec(spec) {
+  return {
+    ...spec,
+    expandNotes: !!(els.expandNotes && els.expandNotes.checked),
+    resolveVideo: !!(els.resolveVideo && els.resolveVideo.checked),
+  };
+}
+
+/** Render (or re-render) the account-risk gate for the currently configured sweep.
+ * Ticking the expansion box escalates the footprint from one intercepted response per ~30
+ * notes to a page-open per note, so the acknowledgement is RESET and Start re-disabled —
+ * an acknowledgement of the cover pass is not an acknowledgement of this one. Ticking the
+ * VIDEO box escalates it again on rednote (it is what opens the video notes), so it
+ * re-renders through here too. */
+function showWarning(spec) {
+  const warning = sweepWarning(configuredSpec(spec));
+  if (warning) {
+    els.warn.hidden = false;
+    els.warn.textContent = warning.text;
+    els.ackRow.hidden = false;
+    els.acknowledge.checked = false;
+  } else {
+    els.warn.hidden = true;
+    els.ackRow.hidden = true;
+  }
+  els.start.disabled = !startEnabled(configuredSpec(spec), els.acknowledge.checked);
 }
 
 function showTarget(spec) {
   els.target.textContent = sweepLabel(spec);
   els.reason.hidden = true;
   els.videoRow.hidden = false;
+  els.resolveVideo.addEventListener("change", () => showWarning(spec));
 
-  // Account-risk gate (002 · B4): a warned platform (Instagram) shows the warning + an
-  // acknowledge checkbox and keeps Start disabled until it's ticked; an unwarned platform
-  // enables Start immediately. `startEnabled` is the single source of truth so the gate
-  // can't be bypassed by a wiring slip.
-  const warning = sweepWarning(spec);
-  if (warning) {
-    els.warn.hidden = false;
-    els.warn.textContent = warning.text;
-    els.ackRow.hidden = false;
-    els.acknowledge.checked = false;
-    els.acknowledge.addEventListener("change", () => {
-      els.start.disabled = !startEnabled(spec, els.acknowledge.checked);
-    });
+  // The per-note expansion toggle (098 R13) — rednote only, OFF by default, with its cost
+  // spelled out beside it rather than discovered after a 40-minute sweep.
+  const expansion = expansionOption(spec);
+  if (expansion) {
+    els.expandRow.hidden = false;
+    els.expandLabel.textContent = expansion.label;
+    els.expandDetail.hidden = false;
+    els.expandDetail.textContent = expansion.detail;
+    els.expandNotes.checked = false;
+    els.expandNotes.addEventListener("change", () => showWarning(spec));
   } else {
-    els.warn.hidden = true;
-    els.ackRow.hidden = true;
+    els.expandRow.hidden = true;
+    els.expandDetail.hidden = true;
   }
-  els.start.disabled = !startEnabled(spec, els.acknowledge.checked);
+
+  // Account-risk gate (002 · B4): a warned platform (Instagram, rednote) shows the warning
+  // + an acknowledge checkbox and keeps Start disabled until it's ticked; an unwarned
+  // platform enables Start immediately. `startEnabled` is the single source of truth so the
+  // gate can't be bypassed by a wiring slip.
+  els.acknowledge.addEventListener("change", () => {
+    els.start.disabled = !startEnabled(configuredSpec(spec), els.acknowledge.checked);
+  });
+  showWarning(spec);
 }
 
 async function getActiveTab() {
@@ -89,7 +135,7 @@ function launch(tabId, spec) {
   // overwrite with a terminal/error line only if the popup is still open.
   els.status.textContent = "Sweeping… watch the app's Sweeps tab. Safe to close this popup.";
   dispatchStart({
-    spec: { ...spec, resolveVideo: els.resolveVideo.checked },
+    spec: configuredSpec(spec),   // both toggles — the SAME spec the gate described
     sendMessage: (message) => browser.tabs.sendMessage(tabId, message),
     injectScript: () => browser.scripting.executeScript({ target: { tabId }, files: ["src/bulk-loader.js"] }),
   })

@@ -1,0 +1,143 @@
+{
+ "success": true,
+ "msg": "Sample text 1",
+ "data": {
+  "cursor": "SAMPLE_TOKEN_107",
+  "has_more": true,
+  "notes": [
+   {
+    "note_id": "SAMPLE_TOKEN_2",
+    "time": 1000001,
+    "last_update_time": 1000002,
+    "xsec_token": "SAMPLE_TOKEN_3",
+    "type": "video",
+    "display_title": "Sample text 2",
+    "user": {
+     "user_id": "SAMPLE_TOKEN_4",
+     "nick_name": "sampleuser1",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE1",
+     "xsec_token": "SAMPLE_TOKEN_5"
+    },
+    "cover": {
+     "file_id": "",
+     "height": 1230,
+     "width": 922,
+     "url": "",
+     "trace_id": "",
+     "info_list": [
+      {
+       "url": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/SAMPLE2!nc_n_webp_prv_1",
+       "image_scene": "WB_PRV"
+      },
+      {
+       "image_scene": "WB_DFT",
+       "url": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/SAMPLE3!nc_n_webp_mw_1"
+      }
+     ],
+     "url_pre": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/SAMPLE2!nc_n_webp_prv_1",
+     "url_default": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/SAMPLE3!nc_n_webp_mw_1"
+    },
+    "interact_info": {
+     "collected": false,
+     "comment_count": "0",
+     "relation": "none",
+     "liked_count": "0",
+     "collected_count": "0",
+     "share_count": "0",
+     "followed": false,
+     "sticky": false,
+     "liked": false
+    }
+   },
+   {
+    "note_id": "SAMPLE_TOKEN_50",
+    "type": "normal",
+    "display_title": "Sample text 14",
+    "user": {
+     "user_id": "SAMPLE_TOKEN_51",
+     "nick_name": "sampleuser13",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE37",
+     "xsec_token": "SAMPLE_TOKEN_52"
+    },
+    "interact_info": {
+     "followed": false,
+     "relation": "none",
+     "liked_count": "0",
+     "comment_count": "0",
+     "share_count": "0",
+     "sticky": false,
+     "liked": false,
+     "collected": false,
+     "collected_count": "0"
+    },
+    "time": 1000025,
+    "last_update_time": 1000026,
+    "cover": {
+     "height": 1600,
+     "width": 1200,
+     "url": "",
+     "trace_id": "",
+     "info_list": [
+      {
+       "image_scene": "WB_PRV",
+       "url": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/00/SAMPLE38!nc_n_webp_prv_1"
+      },
+      {
+       "image_scene": "WB_DFT",
+       "url": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/00/SAMPLE39!nc_n_webp_mw_1"
+      }
+     ],
+     "url_pre": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/00/SAMPLE38!nc_n_webp_prv_1",
+     "url_default": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/00/SAMPLE39!nc_n_webp_mw_1",
+     "file_id": ""
+    },
+    "xsec_token": "SAMPLE_TOKEN_53"
+   },
+   {
+    "cover": {
+     "file_id": "",
+     "height": 1600,
+     "width": 1200,
+     "url": "",
+     "trace_id": "",
+     "info_list": [
+      {
+       "url": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/00/00/SAMPLE79!nc_n_webp_prv_1",
+       "image_scene": "WB_PRV"
+      },
+      {
+       "image_scene": "WB_DFT",
+       "url": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/00/00/SAMPLE80!nc_n_webp_mw_1"
+      }
+     ],
+     "url_pre": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/00/00/SAMPLE79!nc_n_webp_prv_1",
+     "url_default": "http://sns-web-i10.rednotecdn.com/000000000000/00000000000000000000000000000000/00/00/SAMPLE80!nc_n_webp_mw_1"
+    },
+    "interact_info": {
+     "share_count": "0",
+     "followed": false,
+     "sticky": false,
+     "relation": "none",
+     "comment_count": "0",
+     "liked": false,
+     "liked_count": "0",
+     "collected": false,
+     "collected_count": "0"
+    },
+    "last_update_time": 1000053,
+    "type": "video",
+    "display_title": "Sample text 28",
+    "time": 1000054,
+    "xsec_token": "SAMPLE_TOKEN_106",
+    "note_id": "SAMPLE_TOKEN_107",
+    "user": {
+     "user_id": "SAMPLE_TOKEN_108",
+     "nick_name": "sampleuser27",
+     "avatar": "https://sns-avatar-qc.rednotecdn.com/00/SAMPLE81.jpg",
+     "xsec_token": "SAMPLE_TOKEN_109"
+    }
+   }
+  ]
+ },
+ "code": 0
+}

@@ -49,11 +49,20 @@ const FIXTURE = {
   "pinterest-boards": "../test/fixtures/pinterest-boards-live.json",
   instagram: "../test/fixtures/instagram-saved-live.json",
   "x-thread": "../test/fixtures/x-thread-detail.json",
+  rednote: "../test/fixtures/rednote-board-live.json",
+  "rednote-detail": "../test/fixtures/rednote-note-detail.json",
+  "rednote-video": "../test/fixtures/rednote-note-video.json",
 };
 
 /** How to obtain the capture a fixture-less check needs, printed where it's actionable.
- * Empty today — every check has a committed fixture — but the mechanism stays: the next
- * parser added here starts life unverified, and should say so rather than pass silently. */
+ * The mechanism exists so a newly added parser starts life VISIBLY unverified rather than
+ * passing silently — rednote spent 098 T3 in exactly that state and 098 T4 cleared it.
+ *
+ * EMPTY is the healthy state, not a dead mechanism: every registered check now has a
+ * committed fixture. The next parser added to `CHECKS` lands here with no fixture, prints
+ * the generic `pass --<flag> <live capture>` line, and is reported as AWAITING until
+ * someone sanitizes a real response — give it an entry saying where that response comes
+ * from, and delete the entry again once the fixture is committed. */
 const CAPTURE_HINT = {};
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url));
 

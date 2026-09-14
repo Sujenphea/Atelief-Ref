@@ -7,26 +7,28 @@
 > [029](../029-capture-instagram-bulk-overview.md) (the carousel-shaped precedent),
 > [028](../028-capture-link-resolution-overview.md) (the junk-card stopgap in C).
 
-## Status (re-verified against the tree 2026-08-10)
+## Status (re-verified against the tree 2026-09-14)
 
 | Phase | State | Where |
 |---|---|---|
 | K1 `PageResolver` walled-host stopgap | **shipped** | the live junk-card bug is fixed — a pasted rednote link now says "capture with the extension" instead of saving a `"Web - rednote"` card |
 | K2 platform + single-note capture | **shipped** | `rednote` exists as a platform, and schema **v18** (`Migrator.swift:162`) re-tagged the pre-platform harvest — closing Open question 1 as **yes, re-tag**, the recommended answer |
-| K3 bulk board sweep | **not started, BLOCKED** | no `rednote-hook.js`, no `bulk-rednote.js` in `extension/src/` |
-| K4 video stream ladder | **not started** | depends on K3's driver seam |
+| K3a bulk board sweep — cover pass | **shipped, verified live** | `rednote-hook.js`, `bulk-rednote.js`, `rednote-source.js`; a real 116-note board captured end to end, and a re-sweep deduped all of it. Plan **098** |
+| K3b note-open expansion | **shipped, but reaches only what is on screen** | the grid is virtualised — ~13 cards mounted against 37–38 notes per feed page — so `findLink` degrades every off-screen note. Reported honestly (`expanded N of M`), **not yet fixed**: see 098 L2 / task 2A |
+| K4 video stream ladder | **shipped, never run live** | `rednote-video.js` (`selectStreamRung`, `videoCandidates`), the 422 rung-advance in `ingestOne`, `<note_id>:v` items. Unblocked by a `type: "video"` capture on 2026-09-14. No video has been ingested end to end, and only `EF4` has ever been populated |
 
-**K3 is blocked on Open question 3 and that blocker is unchanged**: the sample
-board never fired a page-2 request, so the paginated board-feed response shape is
-still unverified. A board with **more than 30 notes** is the single input the
-driver most depends on, and it can only be captured out-of-band from a logged-in
-session (save the response via DevTools into the gitignored `resources/`, then
-run `node scripts/drift-check.js`).
+**Superseded 2026-09-14.** The blocker below (no page-2 response ever observed)
+was cleared by a live capture; the paginated shape, the terminator, the signing
+refusal and the media-key rule are all recorded in **`.docs/098-rednote-sweep-plan.md`**,
+which is the live document for this work. Four of this doc's load-bearing claims
+turned out wrong and are corrected there — most importantly that the board feed
+carries a full `imageList` per note (it carries **one cover**) and that the CDN
+object key is the last path segment (it is the path **minus two signing segments**,
+and the old rule 404'd on 22 of 37 rows of an ordinary board).
 
-Because K4 sits behind K3's seam, "do rednote next" is not currently an
-available choice — **capturing that fixture is the next action on this doc**, not
-writing code. Everything else here (§A's interception design, §B's three video
-rules, the fixtures and drift-canary plan) is ready to build the moment it lands.
+Read 098 first. What follows is the original scoping note, kept for its research
+— the video-ladder rules in section B in particular were learned by getting them
+wrong in a manual run and are still the source of truth for K4's codec handling.
 
 ## Current state at the time of writing (historical — see Status above)
 

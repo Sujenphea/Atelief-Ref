@@ -85,7 +85,13 @@ function fakePage({ conversationBody, detailStatus = 200, onDetail = null }) {
         return { status: detailStatus, json: async () => conversationBody };
       }
       const body = win.__timelineBody;
-      return { status: 200, clone: () => ({ json: async () => body }), json: async () => body };
+      // `clone()` must expose `text()` as a real Response does — the hook reads the body
+      // as text so it can size its replay buffer (098 R15).
+      return {
+        status: 200,
+        clone: () => ({ json: async () => body, text: async () => JSON.stringify(body) }),
+        json: async () => body,
+      };
     },
   };
   return win;

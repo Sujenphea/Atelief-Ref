@@ -8,8 +8,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { runBulkSweep, sweepCheckpointKey, sweepCleanMarkerKey } from "../src/bulk-controller.js";
+import {
+  runBulkSweep, sweepCheckpointKey, sweepCleanMarkerKey, sweepMode, armsNotePreCheck,
+} from "../src/bulk-controller.js";
 import { BULK } from "../src/bulk-messages.js";
+import { videoCandidates, withVideoCandidates } from "../src/rednote-video.js";
 
 function item(sourceId, videoUrl = null) {
   return {
@@ -142,6 +145,90 @@ test("runBulkSweep: relays a resolved MP4 only when resolveVideo is opt-in", asy
   assert.deepEqual(seen, [null]); // poster only
 });
 
+// MARK: - the rednote stream ladder: it reaches the relay, and NOTHING else (098 D5 / 020 B3)
+
+/** A rednote stream item as `parseNoteDetail` builds one: no still (its poster is a separate
+ * item at `<note_id>`), and the ladder attached non-enumerably. */
+const LADDER = {
+  EF4: [{
+    video_codec: "EF4", format: "mp4", stream_type: 258, width: 720, height: 960,
+    master_url: "http://sns-v11.rednotecdn.com/stream/1/110/258/a_258.mp4",
+    backup_urls: ["http://sns-v27.rednotecdn.com/stream/1/110/258/a_258.mp4"],
+  }],
+};
+
+const streamItem = () => withVideoCandidates({
+  sourceId: "note1:v",
+  mediaUrl: null,
+  mediaUrlFallback: null,
+  cursor: "cur-note1",
+  provenance: { platform: "rednote", mediaUrl: null, rawMetadata: { noteId: "note1", kind: "video" } },
+}, LADDER);
+
+test("runBulkSweep: the stream ladder rides the relay message, only with resolveVideo", async () => {
+  const seen = [];
+  const { transport } = fakeTransport({
+    relayFor: (_id, message) => { seen.push(message.videoCandidates); return { status: "saved", deduplicated: false }; },
+  });
+
+  await runBulkSweep(
+    { platform: "rednote", input: {}, scope: "board:b", resolveVideo: true, expandNotes: true },
+    { transport, driver: driverOf([streamItem()]), ...engineOpts });
+  assert.deepEqual(seen, [videoCandidates(LADDER).candidates],
+    "ordered, master before backup — the contract ingestOne walks");
+
+  seen.length = 0;
+  await runBulkSweep(
+    { platform: "rednote", input: {}, scope: "board:b", expandNotes: true },
+    { transport, driver: driverOf([streamItem()]), ...engineOpts });
+  assert.deepEqual(seen, [null], "the same toggle that gates mp4Url gates the ladder behind it");
+});
+
+test("runBulkSweep: NO stream url reaches a saved checkpoint (020 B3), driven end to end", async () => {
+  // The rule that made the list non-enumerable: the same note served a DIFFERENT ladder on
+  // two visits minutes apart, so a checkpointed `master_url` comes back 404 or points at a
+  // rung that is no longer right. `rednote-video.test.js` proves the engine drops it; this
+  // proves the CONTROLLER — which reads it by name to build the relay message — does not
+  // reintroduce it on the way past.
+  const saves = [];
+  const storage = {
+    async load() { return null; },
+    async save(_key, value) { saves.push(JSON.stringify(value)); },
+    async remove() {},
+  };
+  const { transport } = fakeTransport();
+
+  await runBulkSweep(
+    { platform: "rednote", input: {}, scope: "board:b", resolveVideo: true, expandNotes: true },
+    { transport, driver: driverOf([streamItem()]), storage, ...engineOpts });
+
+  const urls = videoCandidates(LADDER).candidates;
+  assert.ok(saves.length > 0, "the sweep must actually have written, or this proves nothing");
+  assert.ok(urls.length > 0);
+  for (const saved of saves) {
+    for (const url of urls) assert.equal(saved.includes(url), false, `${url} in ${saved}`);
+    assert.equal(saved.includes("rednotecdn.com/stream/"), false, saved);
+  }
+});
+
+test("runBulkSweep: the ladder never enters the PROVENANCE the relay ships", async () => {
+  // The other persisted surface: provenance is what reaches the app and what a checkpointed
+  // item would carry. The ladder travels as its own message field, beside it, never in it.
+  const seen = [];
+  const { transport } = fakeTransport({
+    relayFor: (_id, message) => { seen.push(message); return { status: "saved", deduplicated: false }; },
+  });
+
+  await runBulkSweep(
+    { platform: "rednote", input: {}, scope: "board:b", resolveVideo: true, expandNotes: true },
+    { transport, driver: driverOf([streamItem()]), ...engineOpts });
+
+  const [message] = seen;
+  const stored = JSON.stringify(message.provenance);
+  for (const url of videoCandidates(LADDER).candidates) assert.equal(stored.includes(url), false);
+  assert.ok(message.videoCandidates.length > 0, "…and it did travel, so this is not vacuous");
+});
+
 // MARK: - Stable checkpoint key (cross-run resume)
 
 /** A `{ load, save, remove }` store that records every call, seeded with `initial`. */
@@ -198,8 +285,10 @@ test("runBulkSweep: checkpoints under the STABLE key (not jobId), cleared on com
   assert.ok(checkpointSaves.every((c) => c.value.jobId === "JOB-9"));
   assert.deepEqual(storage.calls.remove, [key]);            // checkpoint cleared on clean finish
   assert.equal(storage.store[key], undefined);
-  // …and the 14A clean-marker is written once, to the :lastclean key (a failure-free run).
-  assert.deepEqual(storage.store[`${key}:lastclean`], { clean: true });
+  // …and the 14A clean-marker is written once, to the :lastclean key (a failure-free run),
+  // carrying the sweep's MODE beside it (098 R14 — a cover-only sweep must be legible as
+  // one, or the next expansion sweep would trust its coverage and skip every note-open).
+  assert.deepEqual(storage.store[`${key}:lastclean`], { clean: true, mode: "cover" });
 });
 
 test("runBulkSweep: resumes enumeration from the saved cursor under the stable key", async () => {
@@ -317,7 +406,7 @@ test("runBulkSweep: records a clean-marker true after a failure-free completion"
     { platform: "instagram", scope: "saved", input: {} },
     { transport, driver, storage, ...engineOpts });
 
-  assert.deepEqual(storage.store["atelier:bulk:instagram:saved:lastclean"], { clean: true });
+  assert.deepEqual(storage.store["atelier:bulk:instagram:saved:lastclean"], { clean: true, mode: "cover" });
 });
 
 test("runBulkSweep: records clean-marker false when the sweep had a permanent/retryable fail", async () => {
@@ -335,7 +424,7 @@ test("runBulkSweep: records clean-marker false when the sweep had a permanent/re
 
   assert.equal(result.status, "complete");
   assert.equal(result.counts.permanentFailed, 1);
-  assert.deepEqual(storage.store["atelier:bulk:instagram:saved:lastclean"], { clean: false });
+  assert.deepEqual(storage.store["atelier:bulk:instagram:saved:lastclean"], { clean: false, mode: "cover" });
 });
 
 test("runBulkSweep: arms early-stop ONLY on a fresh sweep whose prior run was clean", async () => {
@@ -392,4 +481,159 @@ test("runBulkSweep: a failing job-close (complete) PROPAGATES — the ledger clo
   await assert.rejects(
     () => runBulkSweep({ platform: "pinterest", input: {} }, { transport, driver, ...engineOpts }),
     /complete failed/);
+});
+
+// MARK: - the sweep MODE, and the note-level pre-check it gates (098 R14, T5b)
+//
+// The clean marker used to record one bit: "did the last completed sweep of this scope
+// fail?". rednote's expansion pass needs a second: WHICH PASS it was. A cover item is keyed
+// `<note_id>` and an expanded image `<note_id>:<index>`, so after the cover-only DEFAULT
+// every note on the board is a known id — and a note-level pre-check armed off that would
+// skip every note-open of the first expansion sweep. The toggle would silently do nothing
+// on any board already swept, which is worse than the waste R14 exists to cure: that one is
+// loud, this one reports "complete, 0 new".
+
+test("sweepMode: the expansion toggle is what names the pass", () => {
+  assert.equal(sweepMode({ platform: "rednote" }), "cover");
+  assert.equal(sweepMode({ platform: "rednote", expandNotes: false }), "cover");
+  assert.equal(sweepMode({ platform: "rednote", expandNotes: true }), "expansion");
+  assert.equal(sweepMode({ platform: "instagram" }), "cover", "a platform with one pass records it anyway");
+});
+
+test("armsNotePreCheck: the whole table, including the migration row", () => {
+  // prior expansion → this expansion: the R14 case, and the only YES.
+  assert.equal(armsNotePreCheck({ clean: true, mode: "expansion" }, "expansion"), true);
+  // prior cover-only → this expansion: every note still owes its images.
+  assert.equal(armsNotePreCheck({ clean: true, mode: "cover" }, "expansion"), false);
+  // prior expansion → this cover-only: a cover was never keyed `<id>:<index>`.
+  assert.equal(armsNotePreCheck({ clean: true, mode: "expansion" }, "cover"), true);
+  assert.equal(armsNotePreCheck({ clean: true, mode: "cover" }, "cover"), true);
+  // MIGRATION: a marker written by a build that predates the field. UNKNOWN is neither
+  // "cover" nor "expansion" — it arms nothing, and the pre-existing `clean` rule is
+  // untouched (asserted for real against Instagram's early-stop below).
+  assert.equal(armsNotePreCheck({ clean: true }, "expansion"), false);
+  assert.equal(armsNotePreCheck({ clean: true, mode: "something-later" }, "expansion"), false);
+  assert.equal(armsNotePreCheck(null, "expansion"), false);
+});
+
+/** A fake expander with the shape runBulkSweep threads: armed once with the known-set,
+ * read back once at the end. */
+function fakeExpansion(stats = { mode: "expansion", partial: false }) {
+  const armings = [];
+  return {
+    armings,
+    arm: (options) => { armings.push(options); },
+    stats: () => stats,
+  };
+}
+
+test("runBulkSweep: records the sweep's MODE beside `clean`, for both passes", async () => {
+  for (const [spec, mode] of [
+    [{ platform: "rednote", scope: "board:b", input: {} }, "cover"],
+    [{ platform: "rednote", scope: "board:b", input: {}, expandNotes: true }, "expansion"],
+  ]) {
+    const { transport } = fakeTransport();
+    const storage = fakeStorage();
+    await runBulkSweep(spec, {
+      transport, driver: driverOf([item("a")]), storage,
+      expansion: spec.expandNotes ? fakeExpansion() : null, ...engineOpts,
+    });
+    assert.deepEqual(storage.store["atelier:bulk:rednote:board:b:lastclean"], { clean: true, mode });
+  }
+});
+
+test("runBulkSweep: arms the note pre-check only after a CLEAN EXPANSION sweep", async () => {
+  const cleanKey = "atelier:bulk:rednote:board:b:lastclean";
+  const spec = { platform: "rednote", scope: "board:b", input: {}, expandNotes: true };
+  const cases = [
+    // [ the marker the prior sweep left, armed? ]
+    [{ clean: true, mode: "expansion" }, true],            // the R14 case
+    [{ clean: true, mode: "cover" }, false],               // the mode trap: every note owes images
+    [{ clean: false, mode: "expansion" }, false],          // a stray failure → full re-walk
+    [{ clean: true }, false],                              // MIGRATION: an older build's marker
+    [null, false],                                         // never swept
+  ];
+  for (const [marker, armed] of cases) {
+    const { transport } = fakeTransport({ known: ["a"] });
+    const storage = fakeStorage(marker ? { [cleanKey]: marker } : {});
+    const expansion = fakeExpansion();
+    await runBulkSweep(spec, {
+      transport, driver: driverOf([item("a")]), storage, expansion, ...engineOpts,
+    });
+    assert.equal(expansion.armings.length, 1, "the expander is armed exactly once, after the known-set loads");
+    assert.equal(expansion.armings[0].armed, armed, `marker ${JSON.stringify(marker)}`);
+    // Armed or not, it is always HANDED the known-set — the decision is the `armed` flag,
+    // never a silently absent set.
+    assert.deepEqual([...expansion.armings[0].knownSet], ["a"]);
+  }
+});
+
+test("runBulkSweep: a RESUMED sweep never arms the note pre-check", async () => {
+  // Same precondition as Instagram's early-stop: an outstanding checkpoint means the last
+  // attempt HALTED, and a halt can leave a note with 3 of its 9 images ingested — which
+  // looks expanded. The clean marker only speaks for the last sweep that COMPLETED.
+  const key = "atelier:bulk:rednote:board:b";
+  const storage = fakeStorage({
+    [key]: { cursor: null, counts: {}, jobId: "JOB-prev" },
+    [`${key}:lastclean`]: { clean: true, mode: "expansion" },
+  });
+  const { transport } = fakeTransport();
+  const expansion = fakeExpansion();
+
+  await runBulkSweep(
+    { platform: "rednote", scope: "board:b", input: {}, expandNotes: true },
+    { transport, driver: driverOf([item("a")]), storage, expansion, ...engineOpts });
+
+  assert.equal(expansion.armings[0].armed, false);
+});
+
+test("runBulkSweep: Instagram's early-stop is untouched by a marker with no mode", async () => {
+  // The migration case, on the platform it must not regress. A 14A marker written before
+  // `mode` existed still arms STOP_AFTER_CONSECUTIVE_SKIPS exactly as it did — the new
+  // field gates the new pre-check and nothing else.
+  const items = Array.from({ length: 10 }, (_, i) => item(`k${i}`));
+  const { transport } = fakeTransport({ known: items.map((it) => it.sourceId) });
+  const storage = fakeStorage({ "atelier:bulk:instagram:saved:lastclean": { clean: true } });
+
+  const result = await runBulkSweep(
+    { platform: "instagram", scope: "saved", input: {} },
+    { transport, driver: driverOf(items), storage, ...engineOpts, earlyStopThreshold: 3 });
+
+  assert.equal(result.earlyStopped, true);
+  assert.ok(result.counts.skipped < 10);
+});
+
+test("runBulkSweep: the expansion stats ride out on the result (098 R7)", async () => {
+  const stats = { mode: "expansion", expanded: 3, degraded: 2, budgetExhausted: false, partial: true };
+  const { transport } = fakeTransport();
+
+  const result = await runBulkSweep(
+    { platform: "rednote", scope: "board:b", input: {}, expandNotes: true },
+    { transport, driver: driverOf([item("a")]), expansion: fakeExpansion(stats), ...engineOpts });
+
+  // Without this a sweep where forty notes quietly kept their cover is indistinguishable
+  // from one where every note gave up its photos — same status, same counts, same message.
+  assert.deepEqual(result.expansion, stats);
+  assert.equal(result.status, "complete");
+});
+
+test("runBulkSweep: a cover-only sweep reports NO expansion, not an empty one", async () => {
+  const { transport } = fakeTransport();
+  const result = await runBulkSweep(
+    { platform: "rednote", scope: "board:b", input: {} },
+    { transport, driver: driverOf([item("a")]), ...engineOpts });
+
+  assert.equal(result.expansion, null);
+});
+
+test("runBulkSweep: with no expansion and no early-stop, the clean marker is never READ", async () => {
+  // It is only ever an input to those two optimisations, and X/Pinterest have neither.
+  const { transport } = fakeTransport();
+  const storage = fakeStorage();
+
+  await runBulkSweep(
+    { platform: "pinterest", input: { boardId: "B7" } },
+    { transport, driver: driverOf([item("a")]), storage, ...engineOpts });
+
+  assert.equal(storage.calls.load.some((key) => key.endsWith(":lastclean")), false);
 });

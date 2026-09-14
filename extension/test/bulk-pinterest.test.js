@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 
 import {
   mapPinterestPin, pickPinImages, pinIdFrom,
-  parseBoardFeedPage, parseBoardsPage, PinterestResourceError,
+  parseBoardFeedPage, parseBoardsPage, isBoardEntry, PinterestResourceError,
   buildBoardFeedURL, buildBoardsURL, boardFeedHeaders,
   makeResourceFetch, resourceNameFromURL,
   enumerateBoardFeed, enumerateBoards, pinterestBoardDriver,
@@ -27,7 +27,7 @@ const boardFeed = JSON.parse(
 const boardsList = JSON.parse(
   readFileSync(new URL("./fixtures/pinterest-boards.json", import.meta.url)));
 
-const HOST = "REDACTED";
+const HOST = "nz.pinterest.com";
 const firstPin = boardFeed.resource_response.data[0];
 
 // MARK: - pinIdFrom
@@ -65,21 +65,34 @@ test("pickPinImages: no usable image → nulls", () => {
 
 test("mapPinterestPin: maps the fixture pin to a complete BulkItem", () => {
   const item = mapPinterestPin(firstPin, { host: HOST, cursor: "CUR0" });
+  // The fields below are read off the fixture rather than retyped, so guard that the
+  // fixture still HAS them — otherwise a pin that lost its pinner would make the author
+  // assertions compare null to null and pass.
+  assert.ok(firstPin.seo_url && firstPin.pinner.username && firstPin.pinner.full_name);
+  // …and that the fixture's `seo_url` still LOOKS like one. The sanitizer used to flatten
+  // it to `/sampleuserN/sampleN/`, which no assertion here could have noticed because they
+  // all read the value back off the fixture — while `pinIdFrom`'s documented fallback
+  // (`/\/pin\/(\d+)/`) quietly stopped being exercised by any committed capture.
+  assert.match(firstPin.seo_url, /^\/pin\/\d+\/$/);
+  assert.equal(pinIdFrom({ seo_url: firstPin.seo_url }), firstPin.seo_url.split("/")[2]);
   assert.equal(item.sourceId, "1000000000000000239");
   assert.equal(item.mediaUrl, "https://i.pinimg.com/originals/00/00/00/SAMPLE235.jpg");
   assert.equal(item.mediaUrlFallback, "https://i.pinimg.com/736x/00/00/00/SAMPLE234.jpg");
   assert.equal(item.cursor, "CUR0");
   assert.deepEqual(item.provenance, {
     platform: "pinterest",
-    // Canonicalized (21A): the sweep ran on REDACTED — see HOST — and the
+    // Canonicalized (21A): the sweep ran on nz.pinterest.com — see HOST — and the
     // provenance host folds to www so a capture of this pin from another region, or
     // by the DOM extractor, composes the SAME string. The API requests below still
     // use the live host.
-    originalURL: "https://www.pinterest.comREDACTED",
+    // Composed from the pin's OWN `seo_url`, not from a url typed here — the pin id in it
+    // was the account holder's real pin until 498 redacted it, and pinning the literal is
+    // what made that redaction a test failure instead of a no-op.
+    originalURL: `https://www.pinterest.com${firstPin.seo_url}`,
     mediaUrl: "https://i.pinimg.com/originals/00/00/00/SAMPLE235.jpg",
     mediaUrlFallback: "https://i.pinimg.com/736x/00/00/00/SAMPLE234.jpg",
-    authorHandle: "sampleuser",
-    authorName: "sujen",
+    authorHandle: firstPin.pinner.username,
+    authorName: firstPin.pinner.full_name,
     title: "Sample text",
     rawMetadata: { pinId: "1000000000000000239", isVideo: false, link: "https://example.com/asset/240" },
   });
@@ -125,12 +138,94 @@ test("parseBoardsPage: maps boards to { id, name, url }", () => {
   assert.equal(bookmark, "SAMPLE_CURSOR_TOKEN==");
 });
 
+// MARK: - a story is not a board (499)
+//
+// Pinterest interleaves non-board modules into a board resource's `data[]`. The shape
+// below is the `board_ideas_preview_detailed` placeholder a board page opens with,
+// COMPOSED (the capture that exposed this was overwritten before it could be committed),
+// and it is what a user supplied to the boards canary by accident.
+
+test("parseBoardsPage: a story container in data[] is not a board", () => {
+  const placeholder = {
+    resource_response: {
+      status: "success",
+      http_status: 200,
+      endpoint_name: "v3_board_pins",
+      data: [{ type: "story", id: "6733671870646100908", story_type: "board_ideas_preview_detailed" }],
+      bookmark: "SAMPLE_CURSOR_TOKEN==",
+    },
+  };
+  // It has an id, which is the whole reason it used to parse. What it has no way to
+  // produce is a url, and without one `buildBoardFeedURL` sends `source_url=null`.
+  const { boards } = parseBoardsPage(placeholder);
+  assert.deepEqual(boards, []);
+});
+
+test("parseBoardsPage: a declared non-board is dropped from beside real boards", () => {
+  const mixed = {
+    resource_response: {
+      status: "success",
+      http_status: 200,
+      data: [
+        { type: "board", id: "1000000000000000001", name: "Sample One", url: "/sampleuser/sample-one/" },
+        { type: "story", id: "6733671870646100908", story_type: "board_ideas_preview_detailed" },
+        { type: "board", id: "1000000000000000002", name: "Sample Two", url: "/sampleuser/sample-two/" },
+      ],
+      bookmark: null,
+    },
+  };
+  const { boards } = parseBoardsPage(mixed);
+  assert.deepEqual(boards.map((board) => board.id),
+    ["1000000000000000001", "1000000000000000002"]);
+});
+
+test("parseBoardsPage: an entry with NO type still counts as a board", () => {
+  // The fallback direction, and the one that matters if Pinterest renames `type`: an
+  // unrecognisable entry must parse, so the drift surfaces in the canary's name/url
+  // rules rather than as a boards list that silently went empty.
+  const untyped = {
+    resource_response: {
+      status: "success",
+      http_status: 200,
+      data: [{ id: "1000000000000000001", name: "Sample One", url: "/sampleuser/sample-one/" }],
+      bookmark: null,
+    },
+  };
+  assert.deepEqual(parseBoardsPage(untyped).boards,
+    [{ id: "1000000000000000001", name: "Sample One", url: "/sampleuser/sample-one/" }]);
+});
+
+test("parseBoardsPage: a board that lost its url is KEPT, not silently dropped", () => {
+  // Dropping it here would disguise a renamed `board.url` as "the account has fewer
+  // boards"; keeping it is what lets `checkBoards` name the field that moved.
+  const urlless = {
+    resource_response: {
+      status: "success",
+      http_status: 200,
+      data: [{ type: "board", id: "1000000000000000001", name: "Sample One" }],
+      bookmark: null,
+    },
+  };
+  assert.deepEqual(parseBoardsPage(urlless).boards,
+    [{ id: "1000000000000000001", name: "Sample One", url: null }]);
+});
+
+test("isBoardEntry: only a DECLARED non-board type is excluded", () => {
+  assert.equal(isBoardEntry({ type: "board", id: "1" }), true);
+  assert.equal(isBoardEntry({ id: "1" }), true, "no type ⇒ treat as a board");
+  assert.equal(isBoardEntry({ type: null, id: "1" }), true);
+  assert.equal(isBoardEntry({ type: "story", id: "1" }), false);
+  assert.equal(isBoardEntry({ type: "pin", id: "1" }), false);
+  assert.equal(isBoardEntry({ type: "user", id: "1" }), false);
+  assert.equal(isBoardEntry(null), false);
+});
+
 // MARK: - URL / header builders
 
 test("buildBoardFeedURL: encodes source_url + data; adds bookmarks only when resuming", () => {
   const first = buildBoardFeedURL({ host: HOST, boardId: "B1", boardUrl: "/u/board/" });
   const u = new URL(first);
-  assert.equal(u.origin + u.pathname, "https://REDACTED/resource/BoardFeedResource/get/");
+  assert.equal(u.origin + u.pathname, "https://nz.pinterest.com/resource/BoardFeedResource/get/");
   assert.equal(u.searchParams.get("source_url"), "/u/board/");
   const data = JSON.parse(u.searchParams.get("data"));
   assert.equal(data.options.board_id, "B1");
@@ -170,9 +265,9 @@ test("boardFeedHeaders: omits pws-handler / source-url when not supplied", () =>
 
 test("resourceNameFromURL: extracts the /resource/{Name}/get/ segment", () => {
   assert.equal(
-    resourceNameFromURL("https://REDACTED/resource/BoardFeedResource/get/?x=1"),
+    resourceNameFromURL("https://nz.pinterest.com/resource/BoardFeedResource/get/?x=1"),
     "BoardFeedResource");
-  assert.equal(resourceNameFromURL("https://REDACTED/other/path"), null);
+  assert.equal(resourceNameFromURL("https://nz.pinterest.com/other/path"), null);
 });
 
 test("makeResourceFetch: sends the pws-handler + derived source-url for a BoardFeed URL", async () => {
@@ -182,7 +277,7 @@ test("makeResourceFetch: sends the pws-handler + derived source-url for a BoardF
     return { ok: true, status: 200, json: async () => ({ resource_response: { data: [] } }) };
   };
   const fetchJson = makeResourceFetch({ appVersion: "1df0da9", csrfToken: "TOK", fetchImpl });
-  const url = buildBoardFeedURL({ host: "REDACTED", boardId: "B", boardUrl: "/u/b/" });
+  const url = buildBoardFeedURL({ host: "nz.pinterest.com", boardId: "B", boardUrl: "/u/b/" });
   await fetchJson(url);
   // The gatekeeper header is derived from the resource name in the URL — the exact
   // regression this guards (a bare request 403s live).
@@ -202,7 +297,7 @@ test("makeResourceFetch: no pws-handler for a resource with no PWS_HANDLERS entr
     return { ok: true, status: 200, json: async () => ({}) };
   };
   const fetchJson = makeResourceFetch({ appVersion: "v", csrfToken: "T", fetchImpl });
-  await fetchJson("https://REDACTED/resource/PinResource/get/?source_url=/pin/1/&data=%7B%7D");
+  await fetchJson("https://nz.pinterest.com/resource/PinResource/get/?source_url=/pin/1/&data=%7B%7D");
   assert.ok(!("x-pinterest-pws-handler" in sent));
 });
 
@@ -213,7 +308,7 @@ test("makeResourceFetch: BoardsResource now sends its own handler", async () => 
     return { ok: true, status: 200, json: async () => ({}) };
   };
   const fetchJson = makeResourceFetch({ appVersion: "v", csrfToken: "T", fetchImpl });
-  await fetchJson(buildBoardsURL({ host: "REDACTED", username: "u" }));
+  await fetchJson(buildBoardsURL({ host: "nz.pinterest.com", username: "u" }));
   assert.equal(sent["x-pinterest-pws-handler"], "www/[username].js");
 });
 
@@ -408,7 +503,7 @@ test("mapPinterestPin: the provenance host is canonical while API URLs keep the 
 });
 
 test("mapPinterestPin: two regions map one pin to one originalURL (the fork 21A closes)", () => {
-  const nz = mapPinterestPin(firstPin, { host: "REDACTED" });
+  const nz = mapPinterestPin(firstPin, { host: "nz.pinterest.com" });
   const www = mapPinterestPin(firstPin, { host: "www.pinterest.com" });
   assert.equal(nz.provenance.originalURL, www.provenance.originalURL);
 });

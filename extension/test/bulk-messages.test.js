@@ -15,16 +15,23 @@ test("START is the literal external launchers/console use", () => {
 });
 
 test("buildStartMessage tags the type and carries the spec fields", () => {
-  const spec = { platform: "pinterest", input: { boardId: "7", boardUrl: "/u/b/" }, scope: "board:b", resolveVideo: true };
+  const spec = {
+    platform: "pinterest", input: { boardId: "7", boardUrl: "/u/b/" }, scope: "board:b",
+    resolveVideo: true, expandNotes: false,
+  };
   assert.deepEqual(buildStartMessage(spec), {
-    type: START, platform: "pinterest", input: { boardId: "7", boardUrl: "/u/b/" }, scope: "board:b", resolveVideo: true,
+    type: START, platform: "pinterest", input: { boardId: "7", boardUrl: "/u/b/" }, scope: "board:b",
+    resolveVideo: true, expandNotes: false,
   });
 });
 
 test("round-trip: readStartMessage(buildStartMessage(spec)) === spec", () => {
   for (const spec of [
-    { platform: "twitter", input: {}, scope: "bookmarks", resolveVideo: false },
-    { platform: "pinterest", input: { boardId: "1", boardUrl: "/a/b/" }, scope: "board:b", resolveVideo: true },
+    { platform: "twitter", input: {}, scope: "bookmarks", resolveVideo: false, expandNotes: false },
+    { platform: "pinterest", input: { boardId: "1", boardUrl: "/a/b/" }, scope: "board:b", resolveVideo: true, expandNotes: false },
+    // The rednote expansion toggle rides the same round trip — it is the one field whose
+    // absence is the DEFAULT, so it is the one most likely to be dropped on the way.
+    { platform: "rednote", input: { boardId: "abc" }, scope: "board:abc", resolveVideo: false, expandNotes: true },
   ]) {
     assert.deepEqual(readStartMessage(buildStartMessage(spec)), spec);
   }
