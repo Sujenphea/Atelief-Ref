@@ -7,6 +7,7 @@
 
 import { parseBoardFeedPage, isFirstBoardFeedRequest, matchesScope } from "./bulk-rednote.js";
 import { createInterceptSource, SourceStallError } from "./intercept-source.js";
+import { FEED_RESET_GRACE_MS, FEED_RESET_TIMEOUT_MS, FEED_RESET_POLL_MS } from "./config.js";
 
 /** rednote's stall: scrolling stopped producing pages before an `endOfFeed` one. Thrown
  * so the engine halts the sweep RESUMABLE instead of recording a partial board complete. */
@@ -59,6 +60,14 @@ export function createRednoteSource({
   // rednote REFUSED halts the sweep resumable.
   expandItems = null,
   isFatalExpandFailure = null,
+  // 2A's in-page feed reset (changelog 494). `resetFeed` is the live page driver
+  // (`createPageFeedResetter`) — OMITTED, this file behaves exactly as 493 left it, which
+  // is what every test that predates the reset relies on.
+  resetFeed = null,
+  graceMs = FEED_RESET_GRACE_MS,
+  resetTimeoutMs = FEED_RESET_TIMEOUT_MS,
+  resetPollMs = FEED_RESET_POLL_MS,
+  log = () => {},
 } = {}) {
   const source = createInterceptSource({
     scroll, sleep, host, settleMs, maxIdleRounds, scope, onExpandFailure,
@@ -89,9 +98,97 @@ export function createRednoteSource({
   let sawFirstPage = false;
 
   function observe(url) {
-    if (sawFirstPage) return;
     if (scope && !matchesScope(url, scope)) return;
-    if (isFirstBoardFeedRequest(url)) sawFirstPage = true;
+    if (!isFirstBoardFeedRequest(url)) return;
+    // The RESET's own refetch (below) — so everything still held from before it belongs to
+    // a page session that no longer exists, and is dropped. See `held`. Guarded on
+    // `sawFirstPage` as well as on `resetting`: only the FIRST opening slice of the reset
+    // divides the sessions, and a second one arriving behind it must not then discard it.
+    if (resetting && !sawFirstPage) held.length = 0;
+    sawFirstPage = true;
+  }
+
+  /** 493's refusal, in ONE place, reached from both the moment below and the generator's
+   * judge. Same evidence, same error, same resumable halt — the reset does not get its own
+   * rule, it gets judged by the existing one. */
+  function refuseUnlessStarted() {
+    if (!sawFirstPage) throw new RednoteFeedStartError();
+  }
+
+  // ── 2A: put the feed back at its start before enumerating ─────────────────────────
+  //
+  // 493 refuses a run that cannot prove it holds the opening slice. That is a guard, not a
+  // fix: the user still has to reload by hand. This drives the SPA — forward to the board's
+  // profile link, then BACK — which was verified live to make the board refetch with an
+  // empty `cursor` (see `createPageFeedResetter`). 493's rule then becomes the assertion
+  // that the reset worked, which is why nothing here weakens or bypasses it.
+  //
+  // A response that arrives before the decision is HELD rather than forwarded. Not
+  // fastidiousness: a board scrolled to its very bottom replays the exhausted TAIL page
+  // (`has_more:false`), and a tail queued ahead of the refetched page A would END the
+  // enumeration before page A was ever yielded — a `complete` sweep missing the opening
+  // slice, which is the exact defect being fixed, rebuilt out of its own repair. A reset
+  // discards what the previous page session fetched; the board re-serves all of it from the
+  // top, so nothing is lost and no extra fetch is spent. The hold is bounded by `graceMs` +
+  // `resetTimeoutMs` and by the hook's own replay cap.
+  const held = [];
+  let holding = typeof resetFeed === "function";
+  let resetting = false;
+  let startPromise = null;
+
+  const flush = () => {
+    holding = false;
+    while (held.length > 0) source.onResponse(...held.shift());
+  };
+
+  /** Poll `ready` until it is true or `budgetMs` is spent. The expander's `awaitDetail`
+   * idiom, for the same reason: the injected `sleep` is what tests drive, so a fake one
+   * that delivers the response it is waited on is indistinguishable from a real wait. */
+  async function waitFor(ready, budgetMs) {
+    for (let waited = 0; ; waited += Math.max(1, resetPollMs)) {
+      if (ready()) return true;
+      if (waited >= budgetMs) return false;
+      await sleep(resetPollMs);
+    }
+  }
+
+  /**
+   * ONCE per source, whatever pulls it (a resumed sweep, a retried start, two enumerates).
+   * Memoised rather than flagged, so a second caller awaits the first attempt instead of
+   * racing a second navigation onto the page.
+   *
+   * The GRACE is 493's timing argument, moved earlier. The controller posts the replay
+   * request and returns; the buffered responses land asynchronously. Deciding without
+   * waiting for them would navigate a freshly-loaded board for nothing — and an unnecessary
+   * navigation is real automation footprint against a site running an active risk-control
+   * layer (`xhsFingerprintV3`), one that already answered a scripted request with HTTP 461.
+   * The common case — a board the user just opened — therefore drives NOTHING, and pays only
+   * as long as its replay takes to arrive.
+   */
+  async function start() {
+    if (typeof resetFeed !== "function") return;
+    await waitFor(() => sawFirstPage, graceMs);
+    if (sawFirstPage) { flush(); return; }
+
+    resetting = true;
+    try {
+      log("rednote: this board is not at the start of its feed — restarting it in page");
+      if (await resetFeed()) await waitFor(() => sawFirstPage, resetTimeoutMs);
+    } catch (error) {
+      // A driver that threw is a driver that did not reset. Same outcome as one that
+      // returned false: 493 refuses, and the user is told to reload the board.
+      log("rednote: restarting the feed threw:", String(error));
+    } finally {
+      resetting = false;
+    }
+    flush();
+    // The reset was ATTEMPTED and the opening slice still did not arrive, so there is
+    // nothing left to wait for — the grace and the timeout have both been spent. Refusing
+    // HERE rather than at the first yield is what closes 493's wasted-work window: with
+    // note-opening on, the judge inside the loop fires only after the first queued page has
+    // been expanded, which is up to a page of note-opens spent on a sweep that was always
+    // going to halt. Nothing is pulled from the seam at all now, so nothing is expanded.
+    refuseUnlessStarted();
   }
 
   /**
@@ -116,10 +213,12 @@ export function createRednoteSource({
    * halts of their own with better-fitting messages, and all three are resumable.
    */
   async function* enumerate() {
+    startPromise = startPromise || start();
+    await startPromise;
     let judged = false;
     const judge = () => {
       judged = true;
-      if (!sawFirstPage) throw new RednoteFeedStartError();
+      refuseUnlessStarted();
     };
     for await (const item of source.enumerate()) {
       if (!judged) judge();
@@ -130,7 +229,11 @@ export function createRednoteSource({
 
   return {
     enumerate: () => enumerate(),
-    onResponse: (json, url) => { observe(url); source.onResponse(json, url); },
+    onResponse: (json, url) => {
+      observe(url);
+      if (holding) held.push([json, url]);
+      else source.onResponse(json, url);
+    },
     // Passed through, not restated: this source resumes the way every intercept source
     // does, and a second literal here could drift from the one the seam declares.
     resumable: source.resumable,

@@ -511,6 +511,307 @@ test("rednote integration: a RESUMED sweep is held to the same rule, for the sam
   assert.equal(result.counts.skipped, 0, "it refused before walking, so nothing was even skipped");
 });
 
+// MARK: - 2A: the sweep RESETS the feed to its start rather than only refusing
+//
+// 1A's refusal is a guard, not a fix — the user still has to reload by hand. The sweep now
+// puts the feed back itself, in page, and 1A's rule becomes the ASSERTION that it worked.
+//
+// Verified live on 2026-09-14, on a mid-scrolled board, with the hook logging each
+// board-feed request url:
+//
+//     [req] cursor= "6a804923000000002c001f0c"   <- from scrolling
+//     [req] cursor= ""                            <- after navigating BACK to the board
+//
+// The driver that produces that pair (forward to the board's own profile link, then
+// browser-back) is `createPageFeedResetter`, tested against a fake page next door. What is
+// tested HERE is the part only the real parser, the real seam and the real engine can show:
+// WHEN the reset runs, WHAT the sweep does with what it had before it, and — above all —
+// that a reset which did not work falls into 1A's refusal rather than around it.
+
+/** A board source whose reset is scripted. `onReset` stands in for the page: whatever it
+ * pushes into the source is what the SPA refetched. Returns `false` to model a page that
+ * could not be driven at all. `state.resets` counts the attempts. */
+function resettableBoard(pages, onReset, { ...overrides } = {}) {
+  const state = { resets: 0 };
+  const built = boardSource(pages, {
+    resetFeed: async () => {
+      state.resets += 1;
+      return (await onReset(built.source)) !== false;
+    },
+    // The poll is driven by the injected `sleep`, which these tests make instantaneous; the
+    // budgets stay at their real values so nothing here depends on a number.
+    ...overrides,
+  });
+  return { source: built.source, scrollState: built.state, state };
+}
+
+test("rednote integration: a mid-scrolled board is RESET to its start and sweeps whole", async () => {
+  // The live failure, repaired. The run's replay holds only a mid-feed page — 1A refuses
+  // this outright. Here the sweep drives the SPA back to the top, the board refetches with
+  // an empty cursor, and the sweep walks the WHOLE feed from page A.
+  const pageB = feed(FRESH_ROWS.slice(0, 4));
+  const { source, scrollState, state } = resettableBoard(
+    [[pageB, feedUrl(PAGE1.data.cursor)], [lastPage(), feedUrl(pageB.data.cursor)]],
+    (src) => src.onResponse(PAGE1, feedUrl()),      // the refetch: `cursor=` empty
+  );
+  source.onResponse(pageB, feedUrl(CURSOR_A));      // all this run had: a page from mid-feed
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete", "the reset worked and the sweep still refused");
+  assert.equal(result.error, null);
+  assert.equal(state.resets, 1);
+  assert.deepEqual(recorder.ids(), [...idsOf(PAGE1), ...idsOf(pageB)],
+    "the opening slice is the one page a scroll can never reach — it must be in the sweep");
+  assert.equal(scrollState.scrolls, 2, "the board was re-walked from the top, not from where it sat");
+});
+
+test("rednote integration: the reset waits for the REFETCH, not for a fixed delay", async () => {
+  // The reset is awaited on the real signal — a board-feed request whose cursor is empty —
+  // and not on a sleep that hopes the SPA has caught up. Here the refetch lands several
+  // polls after the navigation was driven, which is the ordinary case on a live page: the
+  // route change, the render and the request are three separate turns. A reset that stopped
+  // waiting when the driver returned would refuse this sweep, having actually fixed it.
+  const pageB = feed(FRESH_ROWS.slice(0, 4), { hasMore: false });
+  let driven = false;
+  let polls = 0;
+  const board = {};
+  Object.assign(board, resettableBoard(
+    [[pageB, feedUrl(PAGE1.data.cursor)]],
+    () => { driven = true; },                       // the navigation happens…
+    {
+      sleep: async () => {
+        if (!driven) return;
+        polls += 1;
+        if (polls === 4) board.source.onResponse(PAGE1, feedUrl());   // …the refetch, later
+      },
+    },
+  ));
+
+  const recorder = recordingRelay();
+  const result = await runSweep(board.source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  assert.ok(polls >= 4, "the wait gave up before the page had answered");
+  assert.deepEqual(recorder.ids(), [...idsOf(PAGE1), ...idsOf(pageB)]);
+});
+
+test("rednote integration: a board ALREADY at its start is not navigated at all", async () => {
+  // The common case — a board the user just opened — and the one where doing nothing is the
+  // feature. An unnecessary route change is real automation footprint against a site running
+  // an active risk-control layer (`xhsFingerprintV3`) that has already answered a scripted
+  // request with HTTP 461. The opening slice is in hand, so nothing is driven.
+  const page2 = feed(FRESH_ROWS.slice(0, 4), { hasMore: false });
+  const { source, state } = resettableBoard(
+    [[page2, feedUrl(PAGE1.data.cursor)]],
+    () => assert.fail("a freshly-loaded board was navigated for nothing"),
+  );
+  source.onResponse(PAGE1, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  assert.equal(state.resets, 0);
+  assert.deepEqual(recorder.ids(), [...idsOf(PAGE1), ...idsOf(page2)]);
+});
+
+test("rednote integration: a board whose ONE page is also its first is swept, never reset", async () => {
+  // The smallest honest board: page A is `has_more:false` and there is no second request
+  // anywhere. It holds the beginning because it holds all of it.
+  const only = feed(FRESH_ROWS.slice(0, 3), { hasMore: false });
+  const { source, scrollState, state } = resettableBoard(
+    [], () => assert.fail("a one-page board was navigated"),
+  );
+  source.onResponse(only, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  assert.equal(state.resets, 0);
+  assert.equal(scrollState.scrolls, 0);
+  assert.deepEqual(recorder.ids(), idsOf(only));
+});
+
+test("rednote integration: a reset that produces NO opening slice falls into the refusal", async () => {
+  // The SPA restoring the board from its store instead of refetching — which is exactly why
+  // 1A's guard stays. The reset is driven, the board answers nothing, and the sweep must
+  // halt with 1A's error rather than force itself onward from the middle. A reset that
+  // silently failed must never become a sweep that silently under-captures.
+  const pageB = feed(FRESH_ROWS.slice(0, 4));
+  const { source, scrollState, state } = resettableBoard(
+    [[lastPage(), feedUrl(pageB.data.cursor)]],
+    () => {},                                        // driven, but nothing comes back
+  );
+  source.onResponse(pageB, feedUrl(CURSOR_A));
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "halted");
+  assert.equal(result.haltStatus, null, "a self-halt → the job closes paused, not cancelled");
+  assert.match(result.error, /RednoteFeedStartError/);
+  assert.match(result.error, /reload the board page/i, "the user is still told what to DO");
+  assert.equal(state.resets, 1);
+  assert.deepEqual(recorder.ids(), [], "a sweep from the middle relayed a partial board as a board");
+  assert.equal(scrollState.scrolls, 0, "it refused before spending a scroll on the wrong start");
+});
+
+test("rednote integration: a page that cannot be driven at all is the same refusal", async () => {
+  // No `/user/profile/` anchor — an empty board, or a layout that stopped rendering one.
+  // There is no away leg, so there is no reset, and the sweep degrades to the guard rather
+  // than improvising a lone `history.back()` from a state nobody verified.
+  const pageB = feed(FRESH_ROWS.slice(0, 4));
+  const { source, state } = resettableBoard([], () => false);
+  source.onResponse(pageB, feedUrl(CURSOR_B));
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "halted");
+  assert.match(result.error, /RednoteFeedStartError/);
+  assert.equal(state.resets, 1);
+  assert.deepEqual(recorder.ids(), []);
+});
+
+test("rednote integration: a driver that THROWS is a driver that did not reset", async () => {
+  const pageB = feed(FRESH_ROWS.slice(0, 4));
+  const { source } = resettableBoard([], () => { throw new Error("detached document"); });
+  source.onResponse(pageB, feedUrl(CURSOR_B));
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "halted");
+  assert.match(result.error, /RednoteFeedStartError/, "a throw from the page driver escaped as itself");
+  assert.deepEqual(recorder.ids(), []);
+});
+
+test("rednote integration: what the PREVIOUS page session fetched cannot end the reset sweep", async () => {
+  // The subtle one, and the reason the reset holds responses instead of forwarding them.
+  // A board scrolled to its very bottom replays the exhausted TAIL (`has_more:false`). Queue
+  // that tail ahead of the refetched page A and enumeration ENDS before page A is ever
+  // yielded — a `complete` sweep missing the opening slice, which is this whole defect
+  // rebuilt out of its own repair. The reset restarts the feed, so what the old session
+  // fetched is dropped and the board re-serves all of it from the top.
+  const pageC = feed(FRESH_ROWS.slice(0, 4));
+  const { source } = resettableBoard(
+    [[lastPage(), feedUrl(PAGE1.data.cursor)]],
+    (src) => src.onResponse(PAGE1, feedUrl()),
+  );
+  source.onResponse(pageC, feedUrl(CURSOR_B));      // mid-feed…
+  source.onResponse(lastPage(), feedUrl(CURSOR_C)); // …and the end of the old session
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete");
+  for (const id of idsOf(PAGE1)) {
+    assert.ok(recorder.ids().includes(id), `the opening slice was cut off by a stale end-of-feed (${id})`);
+  }
+});
+
+test("rednote integration: ANOTHER board's opening slice does not satisfy the reset either", async () => {
+  // 1A scopes its evidence; the wait for the reset's refetch is the same evidence and is
+  // scoped the same way. A page A for a board visited earlier in the tab proves nothing
+  // about this feed, whether it arrives before the reset or during it.
+  const pageB = feed(FRESH_ROWS.slice(0, 3));
+  const { source } = resettableBoard(
+    [],
+    (src) => src.onResponse(feed(FRESH_ROWS.slice(3, 5)), feedUrl("", "a1b2c3d4e5f600000000000f")),
+  );
+  source.onResponse(pageB, feedUrl(CURSOR_B));
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "halted");
+  assert.match(result.error, /RednoteFeedStartError/);
+  assert.deepEqual(recorder.ids(), []);
+});
+
+test("rednote integration: the reset runs ONCE per source, however often it is pulled", async () => {
+  // A resumed sweep, a retried start, two enumerations of one source. Driving the page a
+  // second time buys nothing (the feed is already at its start) and costs another route
+  // change against a site that fingerprints browsing.
+  //
+  // The two pulls are CONCURRENT and the reset is held open until both have started, which
+  // is the only shape that tests anything: a sequential second pull is already covered by
+  // the opening slice having arrived, so it would pass with the whole attempt un-memoised.
+  // Here the second pull reaches the decision while the first is still mid-navigation.
+  const pageB = feed(FRESH_ROWS.slice(0, 4));
+  let release = () => {};
+  const gate = new Promise((resolve) => { release = resolve; });
+  const { source, state } = resettableBoard(
+    [[pageB, feedUrl(PAGE1.data.cursor)], [lastPage(), feedUrl(pageB.data.cursor)]],
+    async (src) => { await gate; src.onResponse(PAGE1, feedUrl()); },
+  );
+  source.onResponse(pageB, feedUrl(CURSOR_A));
+
+  const first = source.enumerate();
+  const second = source.enumerate();
+  const pulls = [first.next(), second.next()];
+  release();
+  const [a, b] = await Promise.all(pulls);
+
+  assert.equal(a.done, false);
+  assert.equal(b.done, false, "the second pull was refused for the first pull's success");
+  assert.equal(state.resets, 1, "two pulls drove the page twice");
+
+  await first.return();
+  await second.return();
+  // …and a pull that starts long afterwards drives nothing either.
+  const third = source.enumerate();
+  await third.next();
+  await third.return();
+  assert.equal(state.resets, 1);
+});
+
+// The wasted-work window 1A's report leaves open: with note-opening on, its refusal fires
+// only after the first queued page has been EXPANDED — up to a page of note-opens spent on a
+// sweep that was always going to halt. The reset runs before anything is pulled from the
+// seam, so expansion cannot precede it; and because the refusal is reached the moment the
+// reset is known to have failed, nothing is expanded on that path either.
+
+test("rednote integration: the reset happens BEFORE the first note is opened", async () => {
+  const pageB = feed(FRESH_ROWS.slice(0, 4), { hasMore: false });
+  const order = [];
+  const { source } = resettableBoard(
+    [[pageB, feedUrl(PAGE1.data.cursor)]],
+    (src) => { order.push("reset"); src.onResponse(PAGE1, feedUrl()); },
+    { expandItems: async (items) => { order.push("expand"); return items; } },
+  );
+  source.onResponse(pageB, feedUrl(CURSOR_A));
+
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recordingRelay().relay });
+
+  assert.equal(result.status, "complete");
+  assert.equal(order[0], "reset", "a page of notes was opened before the feed was put back");
+  assert.ok(order.includes("expand"), "the expansion never ran — this test would pass with it deleted");
+});
+
+test("rednote integration: a refused sweep opens NO notes at all", async () => {
+  // The window, closed. Expansion is the expensive half — one paced SPA note-open per note
+  // against the one site known to refuse a scripted request — and every one of them spent
+  // here would be spent on a sweep that halts without relaying anything.
+  const pageB = feed(FRESH_ROWS.slice(0, 4));
+  const order = [];
+  const { source } = resettableBoard(
+    [[lastPage(), feedUrl(pageB.data.cursor)]],
+    () => { order.push("reset"); },                  // driven, and the board does not answer
+    { expandItems: async (items) => { order.push("expand"); return items; } },
+  );
+  source.onResponse(pageB, feedUrl(CURSOR_A));
+
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recordingRelay().relay });
+
+  assert.equal(result.status, "halted");
+  assert.match(result.error, /RednoteFeedStartError/);
+  assert.deepEqual(order, ["reset"], "note-opens were spent on a sweep that was always going to halt");
+});
+
 // MARK: - dedup (what makes a scroll-driven resume safe)
 
 test("rednote integration: a re-sweep SKIPS the notes it already has instead of re-ingesting", async () => {

@@ -33,13 +33,21 @@
 // Everything browser-shaped (`openNote` / `closeNote`) is injected, so the whole expander
 // runs under `node --test` with no DOM. `createPageNoteDriver` at the foot is the live
 // implementation of those two and is the only part that needs a real page.
+//
+// The foot of the file holds a SECOND live driver that is not expansion at all —
+// `createPageFeedResetter` (changelog 494), which puts a mid-scrolled board back at the top
+// of its feed. It lives here because it is made of exactly the moves `createPageNoteDriver`
+// is made of: find an anchor the page rendered, click it rather than navigating, let the SPA
+// settle, `history.back()`, put the scroll back. Those moves are now four shared functions
+// below, used by both drivers. A private second copy next door is the defect — the two would
+// drift, and the one that drifts is the one that silently stops working on a live page.
 
 import { parseNoteDetail } from "./bulk-rednote.js";
 import { rednoteNoteId } from "./extractors/rednote.js";
 import { STREAM_REFUSAL } from "./rednote-video.js";
 import {
   NOTE_OPEN_BUDGET, NOTE_OPEN_PACING_MS, NOTE_OPEN_PACING_JITTER_MS,
-  NOTE_OPEN_TIMEOUT_MS, NOTE_OPEN_POLL_MS, NOTE_OPEN_SETTLE_MS,
+  NOTE_OPEN_TIMEOUT_MS, NOTE_OPEN_POLL_MS, NOTE_OPEN_SETTLE_MS, FEED_RESET_SETTLE_MS,
 } from "./config.js";
 
 /** How many un-consumed detail bodies to keep. Small on purpose: the expander opens notes
@@ -370,7 +378,71 @@ export function createNoteExpander({
  * be classified differently from these. */
 export const isRednoteChallenge = (error) => !!(error && error.challenge === true);
 
-// MARK: - the live page driver (browser glue — E2E-verified, injected everywhere else)
+// MARK: - the live page drivers (browser glue — E2E-verified, injected everywhere else)
+//
+// The four moves below are SHARED by `createPageNoteDriver` and `createPageFeedResetter`.
+// Both drive the same SPA through the same affordances and neither may ever navigate: a
+// board page is the sweep's own host document, so assigning `location` (or opening a
+// window) would tear down the content script, the engine and the sweep with it. Every one
+// of them is guarded and returns a verdict instead of throwing — a page that will not be
+// driven is a degradation the caller reports, never an exception into the sweep.
+
+/** An anchor's href as written, falling back to the resolved `.href` property. Guarded:
+ * a detached or exotic node must degrade to the empty string, never throw. */
+const hrefOf = (node) => {
+  try {
+    const attr = node && typeof node.getAttribute === "function" ? node.getAttribute("href") : null;
+    return String(attr || (node && node.href) || "");
+  } catch {
+    return "";
+  }
+};
+
+/** Click one of the page's OWN anchors, the way a reader does. Scrolled into view first so
+ * the click lands on something the SPA considers visible. `what` names the caller for the
+ * log line, which is the only signal a live run gets when a page stops being drivable. */
+function clickAnchor(node, { log = () => {}, what = "the page" } = {}) {
+  try {
+    if (node && typeof node.scrollIntoView === "function") node.scrollIntoView({ block: "center" });
+    node.click();
+    return true;
+  } catch (error) {
+    log(`rednote: clicking ${what} threw:`, String(error));
+    return false;
+  }
+}
+
+/** Pop one history entry. The ONLY way back that keeps the content script alive. */
+function goBack(win, { log = () => {} } = {}) {
+  try {
+    if (win && win.history && typeof win.history.back === "function") {
+      win.history.back();
+      return true;
+    }
+  } catch (error) {
+    log("rednote: the history back threw:", String(error));
+  }
+  return false;
+}
+
+/** Put the viewport at `y`. The source pages the board by scrolling, so where a driver
+ * leaves the viewport decides where the NEXT fetch pages from. */
+function scrollWindowTo(win, y, { log = () => {} } = {}) {
+  try {
+    if (win && typeof win.scrollTo === "function") win.scrollTo(0, y);
+  } catch (error) {
+    log("rednote: restoring the board scroll threw:", String(error));
+  }
+}
+
+/** The SPA's current route, or "" — the only readable evidence that a click navigated. */
+const pathnameOf = (win) => {
+  try {
+    return (win && win.location && win.location.pathname) || "";
+  } catch {
+    return "";
+  }
+};
 
 /**
  * `openNote` / `closeNote` against a real rednote board page.
@@ -416,17 +488,6 @@ export function createPageNoteDriver({
    * — EMPTY on the board card probed above, `pc_user` on a note the user opened by hand —
    * so requiring it would reject the very anchor this function exists to find. */
   const TOKENISED = /[?&]xsec_token=[^&#]/;
-
-  /** An anchor's href as written, falling back to the resolved `.href` property. Guarded:
-   * a detached or exotic node must degrade to "not tokenised", never throw. */
-  const hrefOf = (node) => {
-    try {
-      const attr = node && typeof node.getAttribute === "function" ? node.getAttribute("href") : null;
-      return String(attr || (node && node.href) || "");
-    } catch {
-      return "";
-    }
-  };
 
   /**
    * The card link for a note — the TOKENISED one when the page renders one.
@@ -474,14 +535,8 @@ export function createPageNoteDriver({
         return false;
       }
       if (!link) return false;
-      try {
-        restoreScroll = typeof win.scrollY === "number" ? win.scrollY : 0;
-        if (typeof link.scrollIntoView === "function") link.scrollIntoView({ block: "center" });
-        link.click();
-      } catch (error) {
-        log("rednote: opening the note threw:", String(error));
-        return false;
-      }
+      restoreScroll = typeof win.scrollY === "number" ? win.scrollY : 0;
+      if (!clickAnchor(link, { log, what: "the note card" })) return false;
       await sleep(settleMs);
       return true;
     },
@@ -498,29 +553,160 @@ export function createPageNoteDriver({
         log("rednote: the Escape close threw:", String(error));
       }
       await sleep(settleMs);
-      try {
-        // Still on a note's own route → the SPA navigated rather than overlaying, so the
-        // history entry the click pushed is what has to come off. WHICH pathnames are a
-        // note is the extractor's `rednoteNoteId`, shared rather than retyped: a private
-        // copy here spelled `/explore/` alone, and the board card routes to
-        // `/board/<board_id>/<note_id>` — so on the live board this fallback never fired.
-        if (win.location && rednoteNoteId(win.location.pathname || "") &&
-            win.history && typeof win.history.back === "function") {
-          win.history.back();
-          await sleep(settleMs);
-        }
-      } catch (error) {
-        log("rednote: the history close threw:", String(error));
-      }
-      try {
-        // Put the viewport back where the board pass left it. The source scrolls to the
-        // document bottom to page, so a note-open that ended halfway up the grid would
-        // otherwise page from the wrong place — or, on a virtualised grid, from a DOM that
-        // has been rebuilt around a different offset.
-        if (typeof win.scrollTo === "function") win.scrollTo(0, restoreScroll);
-      } catch (error) {
-        log("rednote: restoring the board scroll threw:", String(error));
-      }
+      // Still on a note's own route → the SPA navigated rather than overlaying, so the
+      // history entry the click pushed is what has to come off. WHICH pathnames are a
+      // note is the extractor's `rednoteNoteId`, shared rather than retyped: a private
+      // copy here spelled `/explore/` alone, and the board card routes to
+      // `/board/<board_id>/<note_id>` — so on the live board this fallback never fired.
+      if (rednoteNoteId(pathnameOf(win)) && goBack(win, { log })) await sleep(settleMs);
+      // Put the viewport back where the board pass left it. The source scrolls to the
+      // document bottom to page, so a note-open that ended halfway up the grid would
+      // otherwise page from the wrong place — or, on a virtualised grid, from a DOM that
+      // has been rebuilt around a different offset.
+      scrollWindowTo(win, restoreScroll, { log });
     },
+  };
+}
+
+/** The board's own profile link — the "away" leg. A CONSTANT selector: unlike `findLink`,
+ * which must interpolate a (guarded) note id, nothing page-supplied goes near this one. */
+const PROFILE_LINK_SELECTOR = 'a[href*="/user/profile/"]';
+
+/** …and the href shape that makes a match a real profile ROUTE rather than an anchor that
+ * merely mentions one. `[href*=…]` is a SUBSTRING match, so it also selects
+ * `/login?redirect=/user/profile/<id>` — an anchor whose click goes somewhere else entirely,
+ * and whose back leg would therefore land somewhere else entirely. The profile path has to
+ * begin the href's own path, and carry an id. Checked in JS, where (like the note driver's
+ * token test) it cannot break out of anything. */
+const PROFILE_HREF = /^(?:https?:\/\/[^/]+)?\/user\/profile\/[A-Za-z0-9_-]{4,}(?:[/?#]|$)/;
+
+/**
+ * Put a mid-scrolled board back at the START of its feed, IN PAGE (changelog 494).
+ *
+ * 493 established that the board feed pages FORWARD only: a response's `cursor` buys the
+ * next slice, no request walks back, and the sweep's one lever is a scroll to the bottom —
+ * so a run that did not hold the opening slice can never fetch it, and 493 refuses such a
+ * run rather than under-capturing quietly. This is the other half: rather than telling the
+ * user to reload, the sweep puts the feed back itself, and 493's rule becomes the ASSERTION
+ * that it worked.
+ *
+ * A RELOAD is not available — it tears down the content script the sweep runs in (493
+ * rejected it for exactly that reason) — but the SPA can be driven, which is the same idiom
+ * `createPageNoteDriver` already relies on.
+ *
+ * THE SEQUENCE IS NOT A GUESS, and it is not interchangeable with a simpler one. Verified in
+ * the user's own browser on 2026-09-14, on a mid-scrolled board, with the hook logging every
+ * board-feed request url:
+ *
+ *     [req] cursor= "6a804923000000002c001f0c"   <- from scrolling
+ *     [req] cursor= ""                            <- after navigating BACK to the board
+ *
+ * The `cursor=` is empty on that second line — the opening slice, refetched. What produced
+ * it was a PAIR of moves: forward-navigate to another SPA route (the board's own
+ * `/user/profile/<id>` link), then browser-BACK to the board. The back is what triggered the
+ * refetch. `history.back()` alone from an unknown state pops whatever entry happens to be
+ * behind the board and lands somewhere nobody chose; assigning `location` kills the sweep.
+ * Neither is this.
+ *
+ * Returns `true` only when the board was actually left and actually returned to. It never
+ * throws and it never waits for the response — the CALLER owns the evidence, because the
+ * evidence is the request url and `rednote-source.js` is the only thing that sees it. A
+ * `false` here, or a `true` whose refetch never comes, both land in the same place: 493's
+ * refusal, with its "reload the board page, then start the sweep again". A reset that
+ * silently failed must never become a sweep that silently under-captures.
+ */
+export function createPageFeedResetter({
+  win,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  settleMs = FEED_RESET_SETTLE_MS,
+  log = () => {},
+} = {}) {
+  /**
+   * Suppress the browser's own scroll restoration across the back, and put it back after.
+   *
+   * The point of the reset is to be at the TOP of a feed. A back navigation restores the
+   * scroll offset the board had when it was left — which is halfway down the grid, which is
+   * where the SPA's infinite scroll would immediately fetch the NEXT page from, defeating
+   * the refetch we came for. `manual` is scoped to this navigation and restored afterwards
+   * because it is a property of the user's page, not ours to keep.
+   */
+  const suppressScrollRestoration = () => {
+    let previous = null;
+    let applied = false;
+    try {
+      const history = win && win.history;
+      if (history && "scrollRestoration" in history) {
+        previous = history.scrollRestoration;
+        history.scrollRestoration = "manual";
+        applied = true;
+      }
+    } catch (error) {
+      log("rednote: pinning the scroll restoration threw:", String(error));
+    }
+    return () => {
+      if (!applied) return;
+      try {
+        win.history.scrollRestoration = previous;
+      } catch (error) {
+        log("rednote: releasing the scroll restoration threw:", String(error));
+      }
+    };
+  };
+
+  /** The board's profile anchor, or null. An empty board, or a layout that stopped
+   * rendering one, simply has no away leg — and that degrades to 493's refusal. */
+  const findProfileLink = () => {
+    const doc = win && win.document;
+    if (!doc || typeof doc.querySelectorAll !== "function") return null;
+    try {
+      const nodes = Array.from(doc.querySelectorAll(PROFILE_LINK_SELECTOR) || []);
+      return nodes.find((node) => PROFILE_HREF.test(hrefOf(node))) || null;
+    } catch (error) {
+      log("rednote: looking up the board's profile link threw:", String(error));
+      return null;
+    }
+  };
+
+  return async function resetFeed() {
+    const link = findProfileLink();
+    if (!link) {
+      log("rednote: no /user/profile/ link on this board — the feed cannot be restarted in page");
+      return false;
+    }
+
+    const board = pathnameOf(win);
+    const release = suppressScrollRestoration();
+    try {
+      if (!clickAnchor(link, { log, what: "the board's profile link" })) return false;
+      await sleep(settleMs);
+
+      // THE GUARD ON THE BACK, and the reason the click is checked at all. If the click did
+      // not route — an overlay, an intercepted anchor, a build that renders the profile in
+      // place — then the top of the history stack is still the board, and `history.back()`
+      // would pop the BOARD off and land the sweep on whatever the user was looking at
+      // before it. That is the "back from an unknown state" this sequence exists not to be.
+      if (pathnameOf(win) === board) {
+        log("rednote: the profile link did not route away from", board, "— leaving the history alone");
+        return false;
+      }
+      if (!goBack(win, { log })) return false;
+      await sleep(settleMs);
+
+      // And the mirror: back landed somewhere that is not the board (an SPA that pushed two
+      // entries, a redirect). Nothing is retried — a second blind back is the same unknown
+      // state from one step further away. The sweep is left to 493's refusal, which tells
+      // the user to reload the board, which fixes this too.
+      if (pathnameOf(win) !== board) {
+        log("rednote: going back landed on", pathnameOf(win), "not the board", board);
+        return false;
+      }
+
+      // The sweep wants the TOP. `scrollRestoration: manual` is what stops the browser
+      // putting the old offset back; this is what puts the new one where the sweep expects.
+      scrollWindowTo(win, 0, { log });
+      return true;
+    } finally {
+      release();
+    }
   };
 }

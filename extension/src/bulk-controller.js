@@ -29,7 +29,7 @@ import { makeSavedFeedFetch, instagramSavedDriver } from "./bulk-instagram.js";
 import { createRednoteSource } from "./rednote-source.js";
 import { isNoteDetailRequest } from "./bulk-rednote.js";
 import {
-  createNoteExpander, createPageNoteDriver, isRednoteChallenge,
+  createNoteExpander, createPageFeedResetter, createPageNoteDriver, isRednoteChallenge,
 } from "./rednote-detail-client.js";
 import { readVideoCandidates } from "./rednote-video.js";
 import { browser } from "./browser.js";
@@ -453,7 +453,20 @@ function buildRednoteDriver({
   const source = createRednoteSource({
     host,
     scope,
+    log,
     scroll: () => win.scrollTo(0, win.document.body.scrollHeight),
+    // The in-page feed RESET (changelog 494), wired unconditionally — unlike expansion it
+    // is not a toggle, because a sweep that does not hold the opening slice is refused
+    // (493) whether or not notes are being opened. It costs nothing on a board that is
+    // already at its start: the source skips it entirely rather than navigating.
+    //
+    // Its budgets are NOT threaded through `PLATFORM_PACING` the way `noteOpen`'s are, and
+    // the difference is deliberate. Those exist because expansion's cost varies with the
+    // platform being swept; these describe one SPA's one forward-only feed, there is no
+    // second platform to vary them for, and the source already takes them from `config.js`.
+    // A second access path here would add nothing but somewhere for a typo to fall back to
+    // the default and look like it worked.
+    resetFeed: createPageFeedResetter({ win, log }),
     onExpandFailure: (error) => log("note expansion degraded to the cover:", String(error)),
     expandItems: expansion ? expansion.expandItems : null,
     // A note-detail REFUSAL is not a degradation (098 D8): it is the same risk-control

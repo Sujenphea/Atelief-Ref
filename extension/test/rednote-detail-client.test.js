@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 import {
-  createNoteDetailWaiter, createNoteExpander, createPageNoteDriver,
+  createNoteDetailWaiter, createNoteExpander, createPageFeedResetter, createPageNoteDriver,
   isRednoteChallenge, knownNoteIndex, noteIdOf, DETAIL_BUFFER_LIMIT,
 } from "../src/rednote-detail-client.js";
 import { mapBoardNote, parseNoteDetail } from "../src/bulk-rednote.js";
@@ -692,12 +692,33 @@ test("an item with no note id keeps itself rather than being dropped", async () 
  *
  * `state.selectors` records every selector string the document was asked for, so a test can
  * assert what was interpolated into one rather than only what came back out.
+ *
+ * `routes` makes the fake page NAVIGABLE, which the feed reset needs and the note driver did
+ * not: an href listed in it becomes the new `location.pathname` when that anchor is clicked,
+ * and `history.back()` pops back to the previous one. An href absent from it is a click that
+ * does NOT route — the case the reset must notice before it touches the history. `state.log`
+ * is the driver's own log, `state.restoration` every value written to
+ * `history.scrollRestoration`, and `state.navigations` any attempt to leave the page the way
+ * neither driver is ever allowed to (assigning `location`, or opening a window).
  */
-function fakeWindow({ links = [], pathname = "/board/abc" } = {}) {
-  const state = { clicks: [], scrolled: [], back: 0, scrolledIntoView: [], selectors: [] };
+function fakeWindow({
+  links = [], pathname = "/board/abc", routes = {}, under = null, backSteps = 1,
+} = {}) {
+  const state = {
+    clicks: [], scrolled: [], back: 0, scrolledIntoView: [], selectors: [],
+    log: [], restoration: [], navigations: [], order: [],
+  };
+  // `under` is the entry BENEATH the page the driver starts on — what a back would land on
+  // if it popped one too many. `backSteps` is how many entries one `history.back()` pops:
+  // an SPA that pushed two entries for one route change pops past the board with one back.
+  const history = under ? [under, pathname] : [pathname];
   const nodes = links.map((href) => ({
     getAttribute: (name) => (name === "href" ? href : null),
-    click: () => state.clicks.push(href),
+    click: () => {
+      state.clicks.push(href);
+      state.order.push(`click:${href}`);
+      if (Object.prototype.hasOwnProperty.call(routes, href)) history.push(routes[href]);
+    },
     scrollIntoView: () => state.scrolledIntoView.push(href),
   }));
   /**
@@ -721,21 +742,37 @@ function fakeWindow({ links = [], pathname = "/board/abc" } = {}) {
     return nodes.filter((_, index) =>
       terms.some((needle) => needle !== "" && links[index].includes(needle)));
   };
-  return {
-    state,
-    win: {
-      scrollY: 1234,
-      scrollTo: (x, y) => state.scrolled.push(y),
-      history: { back: () => { state.back += 1; } },
-      location: { pathname },
-      KeyboardEvent: function KeyboardEvent(type, init) { this.type = type; Object.assign(this, init); },
-      document: {
-        querySelectorAll: (selector) => matching(selector),
-        querySelector: (selector) => matching(selector)[0] || null,
-        dispatchEvent: (event) => { state.event = event; return true; },
+  const win = {
+    scrollY: 1234,
+    scrollTo: (x, y) => { state.scrolled.push(y); state.order.push(`scroll:${y}`); },
+    open: (...args) => { state.navigations.push(["open", ...args]); },
+    history: {
+      back: () => {
+        state.back += 1;
+        state.order.push("back");
+        for (let step = 0; step < backSteps && history.length > 1; step += 1) history.pop();
       },
     },
+    location: {
+      get pathname() { return history[history.length - 1]; },
+      set href(value) { state.navigations.push(["href", value]); },
+    },
+    KeyboardEvent: function KeyboardEvent(type, init) { this.type = type; Object.assign(this, init); },
+    document: {
+      querySelectorAll: (selector) => matching(selector),
+      querySelector: (selector) => matching(selector)[0] || null,
+      dispatchEvent: (event) => { state.event = event; return true; },
+    },
   };
+  // `scrollRestoration` is a real property with a real value, watched rather than replaced:
+  // the reset must PUT BACK whatever the page had, not merely set its own.
+  let restoration = "auto";
+  Object.defineProperty(win.history, "scrollRestoration", {
+    get: () => restoration,
+    set: (value) => { restoration = value; state.restoration.push(value); },
+    configurable: true,
+  });
+  return { state, win, log: (...args) => state.log.push(args.join(" ")) };
 }
 
 /**
@@ -973,4 +1010,156 @@ test("the page driver never throws into the sweep, whatever the page does", asyn
 
   assert.equal(await driver.openNote({ sourceId: "NOTE-1", provenance: { rawMetadata: { noteId: "NOTE-1" } } }), false);
   await driver.closeNote();   // no KeyboardEvent, no history, no scrollTo — and no throw
+});
+
+// MARK: - the live FEED RESET driver (changelog 494)
+//
+// 493 refuses a sweep that cannot prove it holds the board feed's opening slice, because the
+// feed pages FORWARD only and no scroll walks back. This is the other half: the sweep puts
+// the feed back at its start itself.
+//
+// The sequence is not invented here. Verified in the user's browser on 2026-09-14, on a
+// mid-scrolled board, with the hook logging each board-feed request url:
+//
+//     [req] cursor= "6a804923000000002c001f0c"   <- from scrolling
+//     [req] cursor= ""                            <- after navigating BACK to the board
+//
+// Forward to another SPA route, then browser-BACK. The pair is the mechanism; neither leg
+// alone is. These tests hold the driver to that pair, and to the two things it must never do
+// — navigate away for real, or touch the history from a state it has not verified.
+
+/** The live board's profile href, and where the SPA routes when it is clicked. */
+const PROFILE_HREF = "/user/profile/65d3e54f000000000503359d";
+const PROFILE_ROUTE = "/user/profile/65d3e54f000000000503359d";
+const BOARD_ROUTE = `/board/${LIVE_BOARD_ID}`;
+
+/**
+ * The live board's anchors, with the NOTE cards in front of the profile link.
+ *
+ * Document order is the thing being taken away here. The board the sequence was verified on
+ * happened to render its profile link first — so a driver that simply clicked the first
+ * anchor on the page, or the first one whose href mentions a profile, would pass every test
+ * below on that board and open a NOTE on any board that lays out the other way round.
+ * Opening a note is not an away leg: it overlays, the pathname may not change at all, and
+ * the back that follows is then a back from a state nobody verified.
+ */
+const RESET_ANCHORS = [
+  LIVE_NOTE_HREF,
+  LIVE_TOKENISED_HREF,
+  // A substring match selects this one too — an anchor that MENTIONS a profile route on its
+  // way somewhere else. Clicking it navigates, so the click check would pass; the back would
+  // then land on a login page rather than the board.
+  `/login?redirect=${PROFILE_HREF}`,
+  ...LIVE_ANCHORS.filter((href) => href.startsWith("/user/profile/")),
+];
+
+/** A board page whose profile anchor really routes. */
+const resettableBoard = (overrides = {}) => fakeWindow({
+  links: RESET_ANCHORS,
+  pathname: BOARD_ROUTE,
+  routes: { [PROFILE_HREF]: PROFILE_ROUTE, [`/login?redirect=${PROFILE_HREF}`]: "/login" },
+  ...overrides,
+});
+
+test("the feed reset drives the board AWAY through its own profile link and BACK again", async () => {
+  // The live pair, in order: a click on an anchor the page rendered, then a history back.
+  // The order is asserted, not just the counts — a back before the forward leg is the
+  // "history.back() from an unknown state" that pops the board itself off the stack.
+  const { win, state, log } = resettableBoard();
+  const reset = createPageFeedResetter({ win, sleep: async () => {}, log });
+
+  assert.equal(await reset(), true);
+  assert.equal(state.clicks.length, 1);
+  assert.equal(state.clicks[0], PROFILE_HREF,
+    "the away leg must be the board's own profile ROUTE — not the first anchor, and not an "
+    + "anchor that merely mentions one");
+  assert.equal(state.back, 1, "the BACK is what makes the board refetch — a click alone does not");
+  assert.ok(state.order.indexOf(`click:${PROFILE_HREF}`) < state.order.indexOf("back"),
+    "the back ran before the forward navigation it is supposed to undo");
+  assert.equal(win.location.pathname, BOARD_ROUTE, "the sweep must be left on the board it is sweeping");
+});
+
+test("the feed reset NEVER navigates — no location assignment, no window.open", async () => {
+  // The whole reason a reload is not on the table: a board page is the sweep's own host
+  // document, so a real navigation tears down the content script, the engine and the sweep.
+  // Clicking the SPA's anchor keeps all three alive, which is why it is the only lever here.
+  const { win, state, log } = resettableBoard();
+
+  await createPageFeedResetter({ win, sleep: async () => {}, log })();
+
+  assert.deepEqual(state.navigations, []);
+});
+
+test("the reset leaves the viewport at the TOP, and does not let the browser put it back", async () => {
+  // A back navigation restores the offset the board had when it was left — halfway down the
+  // grid, which is exactly where the SPA's infinite scroll would fetch the NEXT page from,
+  // defeating the refetch the reset exists to cause. So the restoration is pinned MANUAL
+  // across the navigation and released afterwards, and the viewport is put at 0.
+  const { win, state, log } = resettableBoard();
+
+  assert.equal(await createPageFeedResetter({ win, sleep: async () => {}, log })(), true);
+
+  assert.deepEqual(state.scrolled, [0], "the sweep pages from where the reset left the viewport");
+  assert.ok(state.order.indexOf("back") < state.order.lastIndexOf("scroll:0"),
+    "the scroll must be put at the top AFTER the navigation, or the navigation overwrites it");
+  assert.equal(state.restoration[0], "manual", "the browser was left free to restore the old offset");
+  assert.equal(win.history.scrollRestoration, "auto",
+    "the page's own scrollRestoration was not put back — the reset kept a setting that is not its own");
+});
+
+test("a board with no /user/profile/ anchor degrades to the guard instead of improvising", async () => {
+  // An empty board, or a layout that stopped rendering one. There is no away leg, so there
+  // is no pair — and a lone `history.back()` from here is the unknown state. Reporting false
+  // hands the sweep to 493's refusal, which tells the user to reload the board.
+  const { win, state, log } = fakeWindow({ links: [LIVE_NOTE_HREF], pathname: BOARD_ROUTE });
+
+  assert.equal(await createPageFeedResetter({ win, sleep: async () => {}, log })(), false);
+  assert.deepEqual(state.clicks, []);
+  assert.equal(state.back, 0, "it went back without ever having gone forward");
+  assert.ok(state.log.some((line) => line.includes("/user/profile/")), "the degradation passed without a word");
+});
+
+test("a click that does NOT route leaves the history alone — the board is still on top of it", async () => {
+  // THE dangerous case, and the reason the forward leg is verified rather than assumed. If
+  // the click did not navigate (an overlay, an intercepted anchor, a different build), the
+  // top of the history stack is still the board — so `history.back()` would pop the BOARD
+  // off and land the sweep on whatever the user was looking at before it.
+  const { win, state, log } = fakeWindow({
+    links: RESET_ANCHORS, pathname: BOARD_ROUTE, routes: {},   // clicking routes nowhere
+  });
+
+  assert.equal(await createPageFeedResetter({ win, sleep: async () => {}, log })(), false);
+  assert.equal(state.clicks.length, 1, "the away leg was still attempted");
+  assert.equal(state.back, 0, "a back was issued from a state the driver had not verified");
+  assert.equal(win.location.pathname, BOARD_ROUTE);
+});
+
+test("a back that lands somewhere other than the board is reported, not retried", async () => {
+  // An SPA that pushed two entries for one route change, or a redirect: one back pops past
+  // the board. Nothing is retried — a second blind back is the same unknown state one step
+  // further away — so the sweep falls into 493's refusal, whose advice (reload the board
+  // page) repairs this too.
+  const { win, state, log } = fakeWindow({
+    links: RESET_ANCHORS,
+    pathname: BOARD_ROUTE,
+    under: "/explore",                                      // what sits beneath the board
+    routes: { [PROFILE_HREF]: PROFILE_ROUTE },
+    backSteps: 2,
+  });
+
+  assert.equal(await createPageFeedResetter({ win, sleep: async () => {}, log })(), false);
+  assert.equal(state.back, 1, "the recovery improvised a second back from an unknown state");
+  assert.equal(win.location.pathname, "/explore");
+  assert.ok(state.log.some((line) => line.includes("not the board")), "landing off the board passed silently");
+});
+
+test("the feed reset never throws into the sweep, whatever the page does", async () => {
+  // Same contract as the note driver's: a page that will not be driven is a degradation the
+  // caller reports, never an exception into the enumeration.
+  const hostile = {
+    document: { querySelectorAll: () => { throw new Error("detached document"); } },
+  };
+  assert.equal(await createPageFeedResetter({ win: hostile, sleep: async () => {} })(), false);
+  assert.equal(await createPageFeedResetter({ win: {}, sleep: async () => {} })(), false);
+  assert.equal(await createPageFeedResetter({ win: null, sleep: async () => {} })(), false);
 });

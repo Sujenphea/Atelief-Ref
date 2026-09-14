@@ -85,6 +85,35 @@ export const NOTE_OPEN_POLL_MS = 250;
  * the real waiting is `NOTE_OPEN_TIMEOUT_MS` against the intercepted response. */
 export const NOTE_OPEN_SETTLE_MS = 400;
 
+// ---------------------------------------------------------------------------
+// rednote in-page FEED RESET (098 / changelog 494). The board feed pages FORWARD only, so
+// a sweep that does not hold the opening slice can never fetch it — 493 refuses such a run,
+// and these numbers bound the attempt to put the feed back at its start before it does.
+// ---------------------------------------------------------------------------
+
+/** How long to wait for the hook's REPLAY before concluding the board is not at its start.
+ * The controller posts the replay request and returns; the buffered responses come back one
+ * `postMessage` task each. This is the grace 493's timing note is about, moved earlier: too
+ * short and a freshly-loaded board is navigated for nothing (an automation footprint against
+ * a site that already fingerprints browsing); too long and every mid-scrolled sweep pays it
+ * before the reset starts. A fresh board does NOT pay it — the wait ends the moment the
+ * opening slice lands. */
+export const FEED_RESET_GRACE_MS = 1500;
+
+/** How long to wait for the opening slice AFTER the reset has been driven, and how often to
+ * look. `NOTE_OPEN_TIMEOUT_MS`'s reasoning, for the same kind of wait: a route change that
+ * never produces its fetch must cost this much and no more, and then the sweep falls into
+ * 493's refusal rather than sweeping on from the middle. */
+export const FEED_RESET_TIMEOUT_MS = 8000;
+export const FEED_RESET_POLL_MS = 250;
+
+/** How long to let the SPA settle after the click that leaves the board, and again after
+ * the `history.back()` that returns to it. LONGER than `NOTE_OPEN_SETTLE_MS`, which is the
+ * only reason it is not that constant: a note-open is an overlay over a board that stays
+ * mounted, while this is a whole view swap in each direction, and the settle is what the
+ * "did we actually route?" check reads. */
+export const FEED_RESET_SETTLE_MS = 1200;
+
 /**
  * How many VIDEO candidates one item may try before it gives up (098 D5 / 020 rule 2).
  *
