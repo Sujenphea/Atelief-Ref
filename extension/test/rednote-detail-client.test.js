@@ -11,7 +11,8 @@
 //     were ingested is not (the R14 pre-check, and the mode trap under it)
 //   · the board is always given back — a note left open wedges the scroll and truncates
 //     the sweep while reporting it complete
-//   · a refusal is not a degradation
+//   · an ISOLATED refusal degrades one note (020's `xsec_token` hazard); a RUN of them
+//     halts the sweep, and the run is the only thing that tells the two apart
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -20,7 +21,9 @@ import { readFileSync } from "node:fs";
 import {
   createNoteDetailWaiter, createNoteExpander, createPageFeedResetter, createPageNoteDriver,
   createPageStepScroller, isRednoteChallenge, knownNoteIndex, noteIdOf, DETAIL_BUFFER_LIMIT,
+  RednoteDetailRefusalError,
 } from "../src/rednote-detail-client.js";
+import { NOTE_DETAIL_REFUSAL_STREAK } from "../src/config.js";
 import { mapBoardNote, parseNoteDetail } from "../src/bulk-rednote.js";
 
 /** The live note capture — nine images, `type: "normal"`. */
@@ -59,6 +62,12 @@ function videoDetailFor(noteId) {
 
 const NORMAL_ROW = BOARD.data.notes.find((note) => note.type === "normal");
 const VIDEO_ROW = BOARD.data.notes.find((note) => note.type === "video");
+
+/** `count` distinct IMAGE covers, all from the same live row, re-addressed `n-0`…`n-<n>`.
+ * Distinct ids are the point: the refusal rules count and settle per NOTE, so a test that
+ * reused one id would be asserting the ledger's dedup rather than the rule it means to. */
+const imageCovers = (count) =>
+  Array.from({ length: count }, (_, index) => coverItem(NORMAL_ROW, { note_id: `n-${index}` }));
 
 /** The observed 461 shape: a refusal wearing a success envelope (098 D1). */
 const refusal = () => ({ code: 0, success: true, msg: "", data: {} });
@@ -266,12 +275,22 @@ test("the board is restored even when the note-open throws", async () => {
   await assert.rejects(expander.expandItems([cover]), /overlay never opened/);
   assert.equal(state.closed, 0, "the open threw before anything was open");
 
-  // …and when the note DID open and the read is what failed.
+  // …and when the note DID open and the read was REFUSED. Both halves of changelog 500
+  // pass through the same `finally`, so both have to give the board back: the absorbed
+  // refusal, which returns normally, and the escalated one, which throws through it.
   const second = scripted({
     open: (item, waiter) => { waiter.onDetail(refusal()); return true; },
   });
-  await assert.rejects(second.expander.expandItems([cover]), /rednote refused/);
-  assert.equal(second.state.closed, 1, "a challenge still gives the board back");
+  const verdict = await second.expander.attemptNote(cover);
+  assert.deepEqual(ids(verdict.items), [cover.sourceId], "an absorbed refusal keeps the cover");
+  assert.equal(second.state.closed, 1, "an absorbed refusal still gives the board back");
+
+  const third = scripted({
+    refusalStreakLimit: 1,
+    open: (item, waiter) => { waiter.onDetail(refusal()); return true; },
+  });
+  await assert.rejects(third.expander.expandItems([cover]), /rednote refused the last 1/);
+  assert.equal(third.state.closed, 1, "a challenge still gives the board back");
 });
 
 test("a closeNote that throws is survivable — the sweep continues to the next note", async () => {
@@ -495,17 +514,166 @@ test("a note that came back unreadable keeps its cover and counts as a degradati
 
 // MARK: - the refusal (098 D8)
 
-test("a refused note-open THROWS a challenge, and the challenge is classified fatal", async () => {
-  // The one expansion failure that must not degrade: degrading past a refusal keeps
-  // opening notes against a session rednote has already flagged. The seam re-raises it
-  // (`isFatalExpandFailure`) so the engine halts RESUMABLE.
-  const cover = coverItem(NORMAL_ROW);
-  const { expander } = scripted({ open: (item, waiter) => { waiter.onDetail(refusal()); return true; } });
+test("a SUSTAINED refusal halts the sweep, and the halt is classified fatal", async () => {
+  // The expansion failure that must not degrade for ever: keeping on opening notes against
+  // a session rednote has already flagged. The seam re-raises it (`isFatalExpandFailure`)
+  // so the engine halts RESUMABLE — which is why the escalation carries the same
+  // `challenge` flag the board feed's own refusal does, rather than a second predicate.
+  const rows = imageCovers(NOTE_DETAIL_REFUSAL_STREAK);
+  const { expander, state } = scripted({
+    open: (item, waiter) => { waiter.onDetail(refusal()); return true; },
+  });
 
-  const error = await expander.expandItems([cover]).then(() => null, (e) => e);
-  assert.ok(error, "a refusal degraded to the cover instead of halting the sweep");
-  assert.match(String(error), /rednote refused the feed/);
+  const error = await expander.expandItems(rows).then(() => null, (e) => e);
+  assert.ok(error, "an unbroken run of refusals degraded instead of halting the sweep");
   assert.equal(isRednoteChallenge(error), true);
+  assert.equal(error instanceof RednoteDetailRefusalError, true);
+  assert.equal(error.streak, NOTE_DETAIL_REFUSAL_STREAK);
+  assert.equal(state.opened.length, NOTE_DETAIL_REFUSAL_STREAK,
+    "the sweep kept opening notes past the run, or stopped short of it");
+  // The halt message is what `terminalMessage` puts in front of the user verbatim, so it
+  // has to end in something to DO — and it must never carry the credential.
+  assert.match(String(error), /start the sweep again/);
+  assert.equal(String(error).includes(rows[0].xsecToken), false, "the halt leaked the token");
+});
+
+test("an ISOLATED refusal degrades ONE note to its cover — a dead credential is not a flagged session", async () => {
+  // 020's `xsec_token` hazard. A note's token is short-lived and rides in the feed row it
+  // came from, so a refusal on ONE note is at least as likely to be that note's credential
+  // having expired as it is to be rednote turning the session away — and ending a 400-note
+  // sweep over one stale credential is as wrong as silently degrading every note. Which
+  // body a dead token actually produces is unobserved; this is the behaviour that is
+  // correct either way.
+  const [refused, ...rest] = imageCovers(3);
+  const { expander, state } = scripted({
+    open: (item, waiter) => {
+      waiter.onDetail(noteIdOf(item) === refused.sourceId ? refusal() : detailFor(noteIdOf(item)));
+      return true;
+    },
+  });
+
+  const out = await expander.expandItems([refused, ...rest]);
+  assert.equal(state.opened.length, 3, "the sweep stopped at the refusal instead of carrying on");
+  assert.ok(ids(out).includes(refused.sourceId), "the refused note lost the cover it already had");
+  for (const item of rest) {
+    assert.equal(ids(out).includes(item.sourceId), false, `${item.sourceId} kept its cover as well as expanding`);
+  }
+
+  const stats = expander.stats();
+  assert.equal(stats.detailRefused, 1);
+  assert.equal(stats.degraded, 0, "a refusal was filed as a note that would not answer");
+  assert.equal(stats.unreachable, 0, "a refusal was filed as a note with no card on the page");
+  assert.equal(stats.streamRefused, 0, "a refusal was filed as an undecodable video ladder");
+  assert.equal(stats.attempted, 3, "the refused note was not counted among what the sweep set out to expand");
+  // It IS a shortfall, unlike the two video refusals: the note was opened and said no, so
+  // its images are probably still there and sweeping again is worth doing.
+  assert.equal(stats.partial, true);
+});
+
+test("a note that ANSWERS breaks the run — scattered refusals never read as a flagged session", async () => {
+  // The discriminator, stated. A flagged session refuses EVERYTHING; a cohort of dead
+  // tokens has working notes around it. So the halt is keyed on refusals with no answer in
+  // between, and a sweep that keeps getting answers can absorb any number of them.
+  const rows = imageCovers(9);
+  const refusedIds = new Set(["n-0", "n-1", "n-3", "n-4", "n-6", "n-7"]);
+  const { expander } = scripted({
+    open: (item, waiter) => {
+      const noteId = noteIdOf(item);
+      waiter.onDetail(refusedIds.has(noteId) ? refusal() : detailFor(noteId));
+      return true;
+    },
+  });
+
+  const out = await expander.expandItems(rows);
+  assert.ok(out.length > 0);
+  const stats = expander.stats();
+  assert.equal(stats.detailRefused, refusedIds.size, "a run of 2 with answers between it halted the sweep");
+  assert.equal(stats.expanded, rows.length - refusedIds.size);
+});
+
+test("only an ANSWER breaks the run — not silence, and not a card that was never there", async () => {
+  // The other half of the discriminator, and the one that is easy to get backwards. The run
+  // resets when rednote ANSWERS, because an answer is the evidence that the session is not
+  // being turned away. Neither of the two non-answers is that evidence:
+  //
+  //   · a TIMEOUT is silence, and a session being turned away can produce silence as
+  //     readily as a refusal body — reset on it and refuse/timeout alternates for ever;
+  //   · an UNREACHED note asked rednote nothing at all (the card unmounted between the
+  //     check and the click — routine on a virtualised grid since 497), so it is no
+  //     evidence about anything.
+  //
+  // Reset on either and a board can refuse every note it opens without ever halting.
+  const rows = imageCovers(5);
+  const refused = new Set(["n-0", "n-2", "n-4"]);
+  const { expander } = scripted({
+    open: (item, waiter) => {
+      const noteId = noteIdOf(item);
+      if (refused.has(noteId)) { waiter.onDetail(refusal()); return true; }
+      if (noteId === "n-1") return false;        // the card went away — UNREACHED
+      return true;                                // opened, and never answered — a timeout
+    },
+  });
+
+  const error = await expander.expandItems(rows).then(() => null, (e) => e);
+  assert.ok(error, "refusals separated by silence and missing cards never reached the halt");
+  assert.equal(error instanceof RednoteDetailRefusalError, true);
+  assert.equal(error.streak, NOTE_DETAIL_REFUSAL_STREAK);
+  const stats = expander.stats();
+  assert.equal(stats.unreachable, 1, "the unreached note was miscounted");
+  assert.equal(stats.degraded, 1, "the note that never answered was miscounted");
+});
+
+test("a refused note settles ONCE — the ledger gives it its cover and never again", async () => {
+  // The 765654c trap, through the new arm. The streaming pass asks a note again after every
+  // scroll and can meet the same row on two pages; a refused note that re-yielded its cover
+  // would put one picture through the relay twice under one key.
+  const cover = imageCovers(1)[0];
+  const { expander } = scripted({
+    open: (item, waiter) => { waiter.onDetail(refusal()); return true; },
+  });
+
+  assert.deepEqual(ids((await expander.attemptNote(cover)).items), [cover.sourceId]);
+  assert.deepEqual((await expander.attemptNote(cover)).items, [], "the refused note yielded its cover twice");
+  const stats = expander.stats();
+  assert.equal(stats.detailRefused, 1, "one note, counted twice");
+  assert.equal(stats.attempted, 1);
+});
+
+test("the refusal KIND is recorded, and the token never is", async () => {
+  // No live run has yet shown what an expired `xsec_token` comes back as, and no offline
+  // test can establish it. Recording the envelope kind is how the first live run that meets
+  // one tells us: it arrives in the sweep's own stats. What must NOT arrive is the
+  // credential — `reasons` ships out of the sweep in the result, and the token is a
+  // short-lived secret that has no business anywhere but in the request that spends it.
+  const cover = imageCovers(1)[0];
+  const logs = [];
+  const { expander } = scripted({
+    log: (...args) => logs.push(args.join(" ")),
+    open: (item, waiter) => { waiter.onDetail({ code: -1, success: false, msg: "" }); return true; },
+  });
+
+  await expander.attemptNote(cover);
+  const stats = expander.stats();
+  assert.deepEqual(Object.keys(stats.reasons), ["detail_refused:code_-1"],
+    "the refusal was collapsed to an untyped reason, so a live run learns nothing from it");
+  assert.ok(cover.xsecToken, "the fixture row must carry a token for this test to mean anything");
+  assert.equal(JSON.stringify(stats).includes(cover.xsecToken), false, "the stats leaked the token");
+  assert.equal(logs.join("\n").includes(cover.xsecToken), false, "the log leaked the token");
+  assert.ok(logs.some((line) => line.includes("code_-1")), "the kind was not reported at all");
+});
+
+test("a reason key from the wire is bounded — rednote does not get to name our fields", async () => {
+  // `kind` is `code_${json.code}`, and `json` is the platform's. `reasons` is an object
+  // that ships out of the sweep in its result.
+  const cover = imageCovers(1)[0];
+  const { expander } = scripted({
+    open: (item, waiter) => { waiter.onDetail({ code: `${"x".repeat(500)}<script>`, success: true }); return true; },
+  });
+
+  await expander.attemptNote(cover);
+  const [key] = Object.keys(expander.stats().reasons);
+  assert.ok(key.length < 64, `an unbounded reason key got through: ${key.length} chars`);
+  assert.equal(/[<>"\s]/.test(key), false, `a reason key carried markup: ${key}`);
 });
 
 test("isRednoteChallenge says no to an ordinary expansion failure", () => {
@@ -516,10 +684,12 @@ test("isRednoteChallenge says no to an ordinary expansion failure", () => {
   assert.equal(isRednoteChallenge({ challenge: "yes" }), false, "only the boolean flag counts");
 });
 
-test("a refusal for ANOTHER note still halts — a challenge outranks correlation", async () => {
+test("a refusal is never walked past as someone else's response — a challenge outranks correlation", async () => {
   // A refusal carries no note id, so a matcher that correlated first and asked questions
-  // later would discard it as "someone else's response" and keep opening notes.
-  const cover = coverItem(NORMAL_ROW);
+  // later would discard it as "someone else's response" and read the good body behind it —
+  // and the run that halts the sweep would never be counted at all. The refusal wins even
+  // with this note's own answer queued directly behind it.
+  const cover = imageCovers(1)[0];
   const { expander } = scripted({
     open: (item, waiter) => {
       waiter.onDetail(refusal());
@@ -528,7 +698,10 @@ test("a refusal for ANOTHER note still halts — a challenge outranks correlatio
     },
   });
 
-  await assert.rejects(expander.expandItems([cover]), /rednote refused the feed/);
+  const out = await expander.expandItems([cover]);
+  assert.deepEqual(ids(out), [cover.sourceId], "the refusal was discarded and the body behind it read");
+  assert.equal(expander.stats().detailRefused, 1);
+  assert.equal(expander.stats().expanded, 0);
 });
 
 // MARK: - the budget (098 R13)
@@ -1181,6 +1354,32 @@ test("the item's xsec_token is NEVER interpolated into a selector — only the g
     assert.equal(selector.includes(hostile), false);
     assert.equal(selector.includes("xsec_token"), false);
   }
+});
+
+test("the open spends the token the PAGE holds now, never the one the item was mapped with", async () => {
+  // 020's `xsec_token` hazard, and the reason the code needs no refresh mechanism to answer
+  // most of it. A cover item carries the token off the feed row it was mapped from, and by
+  // the time its note is opened that row may be many minutes old — since 497 expansion
+  // rides the scroll, so feed pages queue up ahead of the notes they describe. The item's
+  // token is nonetheless never SPENT: the open clicks one of the page's own anchors, and
+  // the page re-renders those from whatever it last fetched. The freshest token available
+  // without a re-fetch is therefore already the one that gets used, by construction.
+  //
+  // Pinned because it is load-bearing and invisible: nothing here reads `item.xsecToken`,
+  // so nothing would break if a future `findLink` started preferring the anchor that
+  // matches it — it would simply start spending a stale credential, and would say so only
+  // on a live board.
+  const stale = "STALE-TOKEN-FROM-THE-FEED-ROW";
+  const fresh = "AB40freshFromTheRenderedAnchor-Y1w=";
+  const { win, state } = fakeWindow({
+    links: [LIVE_NOTE_HREF, `${LIVE_NOTE_HREF}?xsec_token=${fresh}&xsec_source=`],
+  });
+  const driver = createPageNoteDriver({ win, sleep: async () => {} });
+
+  assert.equal(await driver.openNote(noteItem(LIVE_NOTE_ID, { xsecToken: stale })), true);
+  assert.equal(state.clicks.length, 1);
+  assert.equal(tokenIn(state.clicks[0]), fresh, "the open did not spend the page's own token");
+  assert.equal(state.clicks[0].includes(stale), false, "the item's checkpointed token was spent");
 });
 
 test("the page driver's canOpen answers the same lookup as the open, not a cheaper guess", async () => {

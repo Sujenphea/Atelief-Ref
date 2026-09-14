@@ -85,6 +85,33 @@ export const NOTE_OPEN_POLL_MS = 250;
  * the real waiting is `NOTE_OPEN_TIMEOUT_MS` against the intercepted response. */
 export const NOTE_OPEN_SETTLE_MS = 400;
 
+/** How many note-opens rednote must refuse IN A ROW before the sweep halts (020's
+ * `xsec_token`-expiry hazard, changelog 500).
+ *
+ * A board-feed refusal is unambiguous — the feed is the SESSION talking, and one is worth
+ * stopping a sweep for. A note-detail refusal is not, and the ambiguity is the whole of
+ * this number. Two different things can produce it and they want opposite answers:
+ *
+ *   · the SESSION was flagged (the 461 shape, 098 D1) — halt, because every further open
+ *     is another request against an account rednote has already turned away;
+ *   · the NOTE's `xsec_token` died (020, "Risks & edge cases") — degrade this one note to
+ *     its cover, because the board's other 399 notes are fine and re-sweeping fixes it.
+ *
+ * **Nothing in any live run has yet shown which body a dead token produces**, so the two
+ * cannot be told apart by their SHAPE. They can be told apart by their RHYTHM: a flagged
+ * session refuses everything, while a stale credential is a fact about one note (or one
+ * feed page's worth) with working notes on either side. So the discriminator is a RUN of
+ * refusals with no answer in between, and this is how long a run has to be.
+ *
+ * Three, because the cost of being wrong is asymmetric and small in both directions. Too
+ * high and a flagged session gets a handful of extra opens — seconds of pacing, not a
+ * treadmill. Too low and one dead credential ends a 400-note sweep, which is what it did
+ * before this existed. It is deliberately NOT threaded through `PLATFORM_PACING`, for the
+ * reason `NOTE_REACH_*` is not: it describes one SPA's one refusal behaviour, there is no
+ * second platform to vary it for, and a second access path is only somewhere for a typo to
+ * fall back to a default and look like it worked. */
+export const NOTE_DETAIL_REFUSAL_STREAK = 3;
+
 // ---------------------------------------------------------------------------
 // rednote NOTE REACH (098 2A / changelog 497). The board grid is VIRTUALISED — a live probe
 // on 2026-09-14 counted 13 mounted note cards against a feed page of 37-38 and a board of

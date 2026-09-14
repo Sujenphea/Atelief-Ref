@@ -330,6 +330,40 @@ test("expansionShortfall: an exhausted budget beside heavy unreachability keeps 
   assert.match(line, /sweep again/);
 });
 
+test("expansionShortfall: a REFUSED note is named apart from one that merely gave no answer", () => {
+  // They read the same to a user who is only told "kept covers only", and they ask for
+  // opposite things. A note that timed out will probably time out again; a note rednote
+  // REFUSED (changelog 500 — 020's `xsec_token` hazard) very likely still has its images,
+  // and the credential that fetches them is minted fresh by the next sweep. So the refusal
+  // gets the action and the degradation does not.
+  const line = expansionShortfall({
+    partial: true, attempted: 10, expanded: 7, unreachable: 0, degraded: 1, detailRefused: 2,
+    budgetExhausted: false,
+  });
+  assert.match(line, /expanded 7 of 10/);
+  assert.match(line, /1 kept covers only/);
+  assert.match(line, /refused 2 when opened — sweep again/);
+
+  // …and a sweep with none of them says nothing about refusals.
+  const clean = expansionShortfall({
+    partial: true, attempted: 10, expanded: 9, degraded: 1, detailRefused: 0, budgetExhausted: false,
+  });
+  assert.doesNotMatch(clean, /refused/);
+});
+
+test("expansionShortfall: a sweep whose ONLY shortfall is refusals still says so", () => {
+  // The regression this guards: `partial` gained `detailRefused` in changelog 500, so a
+  // board where every opened note was refused and nothing else went wrong is partial — and
+  // a shortfall line that had no branch for it would render the bare fallback and lose the
+  // one fact the user needs.
+  const line = expansionShortfall({
+    partial: true, attempted: 5, expanded: 0, unreachable: 0, degraded: 0, detailRefused: 5,
+    budgetExhausted: false,
+  });
+  assert.match(line, /expanded 0 of 5/);
+  assert.match(line, /refused 5 when opened — sweep again/);
+});
+
 test("expansionShortfall: names the two reasons apart, because only one is actionable", () => {
   // "Sweep again" fixes an exhausted budget and does nothing for a note that would not open.
   assert.equal(expansionShortfall(null), null);

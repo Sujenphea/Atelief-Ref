@@ -483,10 +483,16 @@ function buildRednoteDriver({
     // cover pass keeps jumping straight to the foot of the document, which is the paging
     // gesture verified live against a real 116-note board.
     scrollStep: expansion ? createPageStepScroller({ win, log }) : null,
-    // A note-detail REFUSAL is not a degradation (098 D8): it is the same risk-control
-    // answer the board feed can give, and degrading past one keeps opening notes against a
-    // session rednote has already flagged. The seam re-raises it and the engine halts
-    // resumable.
+    // A SUSTAINED note-detail refusal is not a degradation (098 D8): it is the same
+    // risk-control answer the board feed can give, and degrading past one keeps opening
+    // notes against a session rednote has already flagged. The seam re-raises it and the
+    // engine halts resumable.
+    //
+    // "Sustained" is changelog 500's amendment and it lives inside the expander, not here:
+    // an ISOLATED refusal is read as one note's `xsec_token` having died (020) and degrades
+    // to that note's cover without ever reaching this predicate. What does reach it is the
+    // run — `RednoteDetailRefusalError`, which carries the same `challenge` flag precisely
+    // so this line needs no second case.
     isFatalExpandFailure: expansion ? isRednoteChallenge : null,
   });
   const onMessage = (event) => {

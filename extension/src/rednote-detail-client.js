@@ -48,7 +48,7 @@ import { STREAM_REFUSAL } from "./rednote-video.js";
 import {
   NOTE_OPEN_BUDGET, NOTE_OPEN_PACING_MS, NOTE_OPEN_PACING_JITTER_MS,
   NOTE_OPEN_TIMEOUT_MS, NOTE_OPEN_POLL_MS, NOTE_OPEN_SETTLE_MS, FEED_RESET_SETTLE_MS,
-  NOTE_REACH_STEP_RATIO,
+  NOTE_REACH_STEP_RATIO, NOTE_DETAIL_REFUSAL_STREAK,
 } from "./config.js";
 
 /** How many un-consumed detail bodies to keep. Small on purpose: the expander opens notes
@@ -198,6 +198,50 @@ const UNREACHED = Symbol("unreached");
 const settled = (items) => ({ settled: true, items });
 const PENDING = Object.freeze({ settled: false, items: [] });
 
+/**
+ * Raised when rednote has refused `NOTE_DETAIL_REFUSAL_STREAK` note-opens IN A ROW — the
+ * point at which "one note's credential died" stops being a plausible reading of the
+ * refusals and "this session is being turned away" starts (020's `xsec_token` hazard,
+ * changelog 500).
+ *
+ * It carries `challenge: true` deliberately: `isFatalExpandFailure` is `isRednoteChallenge`,
+ * which tests exactly that flag, so this routes through the seam's existing fatal arm with
+ * nothing rewired. What it does NOT reuse is `RednoteChallengeError`'s message — that one
+ * says "rednote refused the feed", which is the wrong surface (this is note detail) and
+ * has nothing a user can act on. `terminalMessage` renders a halted sweep's error verbatim
+ * in the popup, so the sentence has to end in something to DO.
+ *
+ * `kind` is the LAST refusal's challenge kind (`code_-1`, `request_failed`,
+ * `no_feed_payload`, …) — a fact about the envelope, never a credential. The token is not
+ * here and is not in the message, because it is not in anything that can be read or stored.
+ */
+export class RednoteDetailRefusalError extends Error {
+  constructor(kind, streak) {
+    super(
+      `rednote refused the last ${streak} notes the sweep tried to open. Everything captured `
+      + "so far is saved and the sweep paused where it stopped. Reload the board page and "
+      + "start the sweep again — if it refuses again straight away, browse rednote normally "
+      + "for a while first.",
+    );
+    this.name = "RednoteDetailRefusalError";
+    this.challenge = true;
+    this.kind = kind;
+    this.streak = streak;
+  }
+}
+
+/** The refusal kind, reduced to something safe to use as a `reasons` KEY.
+ *
+ * `kind` is built from the response body (`code_${json.code}`), so its length and alphabet
+ * are the platform's to choose, and `reasons` ships out of the sweep in the result. Bounded
+ * and stripped here rather than trusted. It is recorded at all — rather than collapsed to a
+ * single "refused" — because WHICH code a dead token produces is exactly the thing no
+ * offline test can establish: the first live run that meets one will have it in the stats. */
+const refusalReason = (kind) => {
+  const safe = String(kind || "unknown").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40);
+  return `detail_refused:${safe || "unknown"}`;
+};
+
 export function createNoteExpander({
   waiter = createNoteDetailWaiter(),
   openNote,
@@ -219,6 +263,10 @@ export function createNoteExpander({
   pacingJitterMs = NOTE_OPEN_PACING_JITTER_MS,
   timeoutMs = NOTE_OPEN_TIMEOUT_MS,
   pollMs = NOTE_OPEN_POLL_MS,
+  /** How many refused note-opens IN A ROW halt the sweep. See the constant: below it a
+   * refusal is read as one note's credential having died and degrades to that note's
+   * cover; at it, it is read as the session being turned away and halts resumable. */
+  refusalStreakLimit = NOTE_DETAIL_REFUSAL_STREAK,
 } = {}) {
   /** null = the note-level pre-check is DISARMED (the default). A Set = armed. */
   let knownNotes = null;
@@ -247,9 +295,25 @@ export function createNoteExpander({
     // cover-still-only outcome. Counted apart from `refused` (never opened) because the
     // two cost different things: this one spent a paced note-open.
     streamRefused: 0,
+    // REACHED IT, AND REDNOTE SAID NO — a note whose detail came back a refusal, absorbed
+    // rather than halting the sweep because it did not come in a run (020's `xsec_token`
+    // hazard, changelog 500). A fourth thing, and none of the other three: not `degraded`
+    // ("reached it and it did not answer" — a timeout, an unparsable body, a fixable-by-
+    // patience kind of nothing), not `unreachable` ("no card on the page"), and not
+    // `streamRefused` (opened, answered, and the answer held no decodable stream — the
+    // content is genuinely not there in a form we can take). This one is a REFUSAL, which
+    // means the note's images probably still exist and a fresh sweep may well get them.
+    // Hence it is a shortfall (`partial`), and the shortfall has an action attached.
+    detailRefused: 0,
   };
   const reasons = Object.create(null);
   let budgetExhausted = false;
+  /** Consecutive refused note-opens with no ANSWERED note in between. Reset by a note that
+   * came back parsed — that is the platform demonstrably still talking to us, which is the
+   * one signal available for telling a dead credential from a dead session. NOT reset by a
+   * timeout: if the session is being turned away some opens may simply never answer, and
+   * resetting on those would let a refuse/timeout alternation run the whole budget. */
+  let refusalStreak = 0;
 
   const note = (reason) => { reasons[reason] = (reasons[reason] || 0) + 1; };
 
@@ -393,9 +457,38 @@ export function createNoteExpander({
     if (canOpen && !(await canOpen(item))) return PENDING;
 
     await pace();
-    const parsed = await openAndRead(item, noteId);
+    let parsed;
+    try {
+      parsed = await openAndRead(item, noteId);
+    } catch (error) {
+      // A NON-refusal throw is the page driver blowing up, and it belongs where it always
+      // went: out of here, to the caller's `failNote`. Only a refusal is reconsidered.
+      if (!isRednoteChallenge(error)) throw error;
+      refusalStreak += 1;
+      // A RUN of refusals is the session, not a credential — halt, resumable, with copy
+      // that says what to do. This is the pre-500 behaviour, moved from the FIRST refusal
+      // to the Nth, and it is the only arm here that ends the sweep.
+      if (refusalStreak >= refusalStreakLimit) {
+        throw new RednoteDetailRefusalError(error.kind || null, refusalStreak);
+      }
+      // …and below the run, it is read as this ONE note's `xsec_token` having died (020).
+      // The note keeps the cover the board pass already captured and the sweep carries on
+      // — through `finish`, so the ledger records it settled exactly like every other arm
+      // and a second sighting of this note yields nothing.
+      note(refusalReason(error.kind));
+      counts.detailRefused += 1;
+      log("rednote: refused a note-open (", String(error.kind || "unknown"),
+        ") — it keeps its cover; halting after", refusalStreakLimit, "in a row");
+      return finish(noteId, [item]);
+    }
     if (parsed === UNREACHED) return PENDING;
     if (!parsed) { counts.degraded += 1; return finish(noteId, [item]); }
+    // The platform ANSWERED us, so whatever the refusals before this were, they were not a
+    // session being turned away. Placed below both returns above on purpose, and each is a
+    // decision: a note with no card to click asked rednote nothing, and a note that timed
+    // out got no answer — a session being turned away can produce silence as easily as a
+    // refusal body, and resetting on silence would let refuse/timeout alternate for ever.
+    refusalStreak = 0;
     if (parsed.unsupported) {
       // `items: []` with a reason means KEEP THE COVER (098 R7 / changelog 485). It never
       // means the note is empty, and dropping it here would lose a picture the cover pass
@@ -499,8 +592,9 @@ export function createNoteExpander({
      * What this sweep's expansion actually did (098 R7's first-class outcome).
      *
      * `partial` is the load-bearing field: true when this sweep expanded LESS than it set
-     * out to — a note that could not be REACHED, a note that would not answer, or a budget
-     * that ran out. `unreachable` is named in it explicitly rather than riding inside
+     * out to — a note that could not be REACHED, a note that would not answer, a note
+     * rednote REFUSED (`detailRefused`, changelog 500), or a budget that ran out.
+     * `unreachable` is named in it explicitly rather than riding inside
      * `degraded`: pulling the unmounted-card case out of `degraded` (so a reader can tell
      * "no card on the page" from "the page did not answer") would otherwise have made a
      * board where EVERY note was unreachable report `degraded: 0, partial: false` — a
@@ -522,6 +616,11 @@ export function createNoteExpander({
      * 81 %-video board as partly expanded on every single sweep, which is the failure T5b's
      * split exists to prevent. Both are counted and both are named in `reasons`, so a user
      * who wants the number can have it without the status line crying wolf.
+     *
+     * `detailRefused` (changelog 500) is the one that LOOKS like those two and is not. The
+     * note was opened and rednote said no, so — unlike an `ef*`-only ladder — its images are
+     * probably still there and a fresh sweep may well get them. That is a shortfall with an
+     * action attached, so it is in `partial` where the two above are not.
      */
     stats: () => ({
       mode: "expansion",
@@ -529,7 +628,8 @@ export function createNoteExpander({
       ...counts,
       budgetExhausted,
       reasons: { ...reasons },
-      partial: counts.degraded > 0 || counts.unreachable > 0 || budgetExhausted,
+      partial: counts.degraded > 0 || counts.unreachable > 0 || counts.detailRefused > 0
+        || budgetExhausted,
     }),
   };
 }

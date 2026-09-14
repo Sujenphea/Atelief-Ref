@@ -35,6 +35,7 @@ import {
 import { parseBoardFeedPage, parseNoteDetail } from "../src/bulk-rednote.js";
 import { ORIGIN_HOST } from "../src/extractors/rednote.js";
 import { runSweep, OUTCOMES } from "../src/bulk-engine.js";
+import { NOTE_DETAIL_REFUSAL_STREAK } from "../src/config.js";
 
 /** The trimmed first page: 3 notes, `has_more: true`, a non-empty cursor. */
 const PAGE1 = JSON.parse(readFileSync(new URL("./fixtures/rednote-board.json", import.meta.url)));
@@ -1138,51 +1139,81 @@ test("rednote K4: with the video toggle OFF, a video note is untouched by T6c", 
   assert.equal(expander.stats().refused, VIDEO_IDS.size);
 });
 
-test("rednote expansion: a refused NOTE-OPEN halts the sweep resumable, like a refused board page", async () => {
+test("rednote expansion: a RUN of refused note-opens halts the sweep resumable, like a refused board page", async () => {
   // The asymmetry that matters (098 R7 / 485): `expandItems` degrades on a throw, which is
-  // right for a note that would not open and wrong for a refusal — degrading past one keeps
-  // opening notes against a session rednote has already flagged.
+  // right for a note that would not open and wrong for a session rednote has flagged —
+  // degrading past one of those keeps opening notes against an account already turned away.
+  //
+  // Changelog 500 put a RUN between the first refusal and the halt, because a refusal on
+  // one note is also what a dead `xsec_token` may look like (020) and no live run has yet
+  // shown which. Everything below the run is absorbed; the run itself still halts, still
+  // resumable, still leaving the board scrollable.
   const store = new Map();
   const storage = {
     load: async (k) => store.get(k) ?? null,
     save: async (k, v) => { store.set(k, v); },
     remove: async (k) => { store.delete(k); },
   };
-  const unreached = feed(FRESH_ROWS.slice(0, 3), { hasMore: false });
-  const { source, state } = expandingSource(
-    [[unreached, feedUrl(PAGE1.data.cursor)]],
-    { answer: () => detailRefusal() });
-  source.onResponse(PAGE1, feedUrl());
+  const rows = imageRows(NOTE_DETAIL_REFUSAL_STREAK + 2, "refused");
+  const page = feed(rows, { hasMore: false });
+  const { source, state } = expandingSource([], { answer: () => detailRefusal() });
+  source.onResponse(page, feedUrl());
 
   const recorder = recordingRelay();
   const result = await runSweep(source, { boardId: BOARD_ID }, {
     ...engineOpts, relay: recorder.relay, storage, checkpointKey: "rednote:test",
   });
 
-  assert.equal(result.status, "halted", "a refused note-open degraded to the cover instead of halting");
-  assert.match(result.error, /rednote refused the feed/);
-  assert.equal(state.closed, 1, "the board was given back even as the sweep halted");
-  for (const id of idsOf(unreached)) {
-    assert.equal(recorder.ids().includes(id), false, "the sweep kept paging after the refusal");
-  }
+  assert.equal(result.status, "halted", "an unbroken run of refusals degraded instead of halting");
+  assert.match(result.error, /rednote refused the last/);
+  assert.equal(state.opened.length, NOTE_DETAIL_REFUSAL_STREAK,
+    "the pass stopped short of the run, or kept opening notes past it");
+  assert.equal(state.closed, NOTE_DETAIL_REFUSAL_STREAK, "a note was left open over the board");
+
   // WHAT CHANGED WITH STREAMING, pinned deliberately (changelog 497). Before 2A a whole
   // page was expanded and then yielded, so a refusal partway through discarded the notes
   // ahead of it and this asserted NOTHING was relayed. A streaming pass has already
   // relayed them — which is the same trade the board feed's own fatal route makes one
   // level up ("what arrived before the refusal is kept"), and the safety property is
-  // untouched: what must never happen is a relay AFTER the refusal, and the notes here
-  // were settled before rednote said no. Refusing to yield them would mean holding a whole
-  // page back to preserve the option of discarding it, which is exactly the 3B block being
-  // removed. So: the refused note and everything behind it are absent, the video note
-  // ahead of it — settled without an open, before any refusal existed — is kept.
-  const refusedAt = PAGE1.data.notes.findIndex((row) => row.type !== "video");
-  const settledFirst = PAGE1.data.notes.slice(0, refusedAt).map((row) => row.note_id);
-  assert.deepEqual(recorder.ids(), settledFirst, "a note settled after the refusal was still relayed");
-  for (const row of PAGE1.data.notes.slice(refusedAt)) {
+  // untouched: what must never happen is a relay AFTER the halt. So the notes the run
+  // absorbed are relayed at cover fidelity, and nothing from the halt onward is.
+  const absorbed = rows.slice(0, NOTE_DETAIL_REFUSAL_STREAK - 1).map((row) => row.note_id);
+  assert.deepEqual(recorder.ids(), absorbed, "a note settled after the halt was still relayed");
+  for (const row of rows.slice(NOTE_DETAIL_REFUSAL_STREAK - 1)) {
     assert.equal(recorder.ids().includes(row.note_id), false,
-      `the refusal did not stop the pass — ${row.note_id} was relayed anyway`);
+      `the halt did not stop the pass — ${row.note_id} was relayed anyway`);
   }
-  assert.equal(state.opened.length, 1, "the pass kept opening notes against a flagged session");
+});
+
+test("rednote expansion: ONE refused note-open degrades that note and the board sweeps on", async () => {
+  // 020's `xsec_token` hazard, end to end through the real seam, the real ledger and the
+  // real engine. A short-lived per-note credential dying is not the same event as a flagged
+  // account, and the pre-500 code could not tell them apart because it halted on the first
+  // refusal either way — one stale token ended a whole board. Now the note keeps the cover
+  // the board pass already captured, every other note expands, and the sweep COMPLETES and
+  // says it fell short.
+  const rows = imageRows(4, "mixed");
+  const page = feed(rows, { hasMore: false });
+  const { source, expander, state } = expandingSource([], {
+    answer: (noteId) => (noteId === rows[1].note_id ? detailRefusal() : detailFor(noteId)),
+  });
+  source.onResponse(page, feedUrl());
+
+  const recorder = recordingRelay();
+  const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
+
+  assert.equal(result.status, "complete", "one dead credential ended the whole sweep");
+  assert.equal(state.opened.length, rows.length, "the pass stopped opening notes after the refusal");
+  // The cover-or-children rule, through the new arm: the refused note contributes exactly
+  // its cover, every other note exactly its children, and nothing contributes both.
+  assert.deepEqual(recorder.ids(), rows.flatMap((row) =>
+    (row.note_id === rows[1].note_id ? [row.note_id] : imageIdsOf(row.note_id))));
+
+  const stats = expander.stats();
+  assert.equal(stats.detailRefused, 1);
+  assert.equal(stats.expanded, rows.length - 1);
+  assert.equal(stats.degraded, 0, "a refusal was filed as a note that would not answer");
+  assert.equal(stats.partial, true, "a sweep that captured less than it meant to must say so");
 });
 
 test("rednote expansion: a note that never answers keeps its cover and the sweep still completes", async () => {
@@ -1560,16 +1591,19 @@ test("rednote 2A: a note the page THREW over degrades by itself — the page aro
 
 test("rednote 2A: a 461 on a note reached only AFTER a step still halts resumable", async () => {
   // The fatal route through the new loop shape, and not merely on the first note of a page:
-  // a refusal is the same risk-control answer the board feed gives, so degrading past one
-  // keeps opening notes against a session rednote has already flagged. Everything settled
-  // before it is kept — nothing is relayed after it.
-  const rows = imageRows(4);
+  // a sustained refusal is the same risk-control answer the board feed gives, so degrading
+  // past it keeps opening notes against a session rednote has already flagged. Everything
+  // settled before it is kept — nothing is relayed after it.
+  //
+  // The refusals start at the SECOND note, so the run is met halfway down a walked page
+  // rather than at its head: the walk, the ledger and the run counter all have to compose.
+  const rows = imageRows(NOTE_DETAIL_REFUSAL_STREAK + 3);
   const page = feed(rows, { hasMore: false });
   const grid = virtualGrid([rows.map((row) => row.note_id)], { band: 1 });
   const { source, state } = expandingSource([], {
     mounted: grid.mounted,
     scrollStep: () => grid.step(),
-    answer: (noteId) => (noteId === rows[1].note_id ? detailRefusal() : detailFor(noteId)),
+    answer: (noteId) => (noteId === rows[0].note_id ? detailFor(noteId) : detailRefusal()),
   });
   source.onResponse(page, feedUrl());
 
@@ -1577,10 +1611,13 @@ test("rednote 2A: a 461 on a note reached only AFTER a step still halts resumabl
   const result = await runSweep(source, { boardId: BOARD_ID }, { ...engineOpts, relay: recorder.relay });
 
   assert.equal(result.status, "halted", "a refused note-open degraded to the cover instead of halting");
-  assert.match(result.error, /rednote refused the feed/);
-  assert.deepEqual(recorder.ids(), imageIdsOf(rows[0].note_id), "what was settled before the refusal is kept");
-  assert.deepEqual(state.opened, [rows[0].note_id, rows[1].note_id], "the pass kept opening notes after a refusal");
-  assert.equal(state.closed, 2, "the board was given back even as the sweep halted");
+  assert.match(result.error, /rednote refused the last/);
+  const absorbed = rows.slice(1, NOTE_DETAIL_REFUSAL_STREAK).map((row) => row.note_id);
+  assert.deepEqual(recorder.ids(), [...imageIdsOf(rows[0].note_id), ...absorbed],
+    "what was settled before the halt is kept, and nothing after it is");
+  assert.deepEqual(state.opened, rows.slice(0, NOTE_DETAIL_REFUSAL_STREAK + 1).map((row) => row.note_id),
+    "the run was miscounted — the pass halted early or kept opening notes past it");
+  assert.equal(state.closed, state.opened.length, "the board was given back even as the sweep halted");
 });
 
 test("rednote 2A: the cover-or-children rule holds across a whole mixed sweep, walked", async () => {

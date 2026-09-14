@@ -170,13 +170,17 @@ export function haltReason(result) {
  * visible without arithmetic, and it is stated whenever the sweep attempted anything at
  * all — a sweep that attempted nothing says nothing, rather than "0 of 0".
  *
- * The three reasons, in the order a reader needs them:
+ * The four reasons, in the order a reader needs them:
  *   · `unreachable` — the note's card was never on the page, so it could not be OPENED.
  *     The user can do nothing about it and re-sweeping will not help; it is the grid's
  *     virtualisation, and 098 2A is the fix.
  *   · `degraded`    — the note WAS opened and did not give up its photos (a timeout, an
  *     unparsable body). Reached, no answer.
- *   · `budgetExhausted` — the only one with an action attached: sweep again. */
+ *   · `detailRefused` — the note was opened and rednote REFUSED it (changelog 500). Named
+ *     apart from `degraded` because it asks for something different: the images are
+ *     probably still there, so sweeping again is worth doing, where re-sweeping a note
+ *     that timed out mostly is not.
+ *   · `budgetExhausted` — the other one with an action attached: sweep again. */
 export function expansionShortfall(expansion) {
   if (!expansion || !expansion.partial) return null;
   const parts = [];
@@ -186,6 +190,9 @@ export function expansionShortfall(expansion) {
       + "\u2014 the board only renders what is on screen");
   }
   if (expansion.degraded > 0) parts.push(`${expansion.degraded} kept covers only`);
+  if (expansion.detailRefused > 0) {
+    parts.push(`rednote refused ${expansion.detailRefused} when opened — sweep again`);
+  }
   if (expansion.budgetExhausted) parts.push(`the ${expansion.budget}-note budget ran out — sweep again for the rest`);
   return parts.join("; ") || "some notes kept covers only";
 }
