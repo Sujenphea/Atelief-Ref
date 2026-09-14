@@ -10,6 +10,9 @@
 //   node sanitize-capture.js <raw.json> <out.json>
 
 import { readFileSync, writeFileSync } from "node:fs";
+// The ONE shape this script keeps out of a query string, imported from the module that
+// strips it rather than respelled here — see the query note in `syntheticUrl`.
+import { isTransformDirective } from "../src/extractors/rednote.js";
 
 const [, , inPath, outPath] = process.argv;
 const rawText = readFileSync(inPath, "utf8");
@@ -206,7 +209,19 @@ function syntheticUrl(s) {
   }
   for (; i < Math.max(depth - 1, 0); i++) segs.push("00");
   const last = `SAMPLE${n}${streamSuffix}${ext}${transform}`;
-  return `${u.protocol}//${u.host}/${[...segs, last].join("/")}`;
+  // The QUERY was dropped WHOLESALE, which is right for everything that normally rides in
+  // one — `?sign=…` and `xsec_token` are credentials — and wrong for the one thing in a
+  // query that is not identity at all: rednote's OTHER transform spelling,
+  // `?imageView2/2/w/540/format/jpg/q/75`, which is what a live `board/info` response puts
+  // on every cover. Flattened away, such a fixture proves the opposite of what the canary
+  // asks, the fifth time this sweep has erased the very shape `toRednoteOriginal` is
+  // defined against (483 the CDN host, 485 the `!` suffix, 487 the signing prefix, 488 the
+  // unsigned `/stream/` route). So a transform directive is kept VERBATIM and every other
+  // query component is still dropped — `isTransformDirective` is imported, not respelled,
+  // because a private copy here is exactly how the fixture and the rewrite drift apart.
+  const directives = u.search.replace(/^\?/, "").split("&").filter(isTransformDirective);
+  const search = directives.length ? `?${directives.join("&")}` : "";
+  return `${u.protocol}//${u.host}/${[...segs, last].join("/")}${search}`;
 }
 
 function syntheticPath(s) {

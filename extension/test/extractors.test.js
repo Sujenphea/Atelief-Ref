@@ -19,7 +19,9 @@ import { twitter, toStatusPermalink, belongsToStatus } from "../src/extractors/t
 import { pinterest } from "../src/extractors/pinterest.js";
 import { instagram, toPostPermalink } from "../src/extractors/instagram.js";
 import { cosmos } from "../src/extractors/cosmos.js";
-import { rednote, toRednoteOriginal, ORIGIN_HOST } from "../src/extractors/rednote.js";
+import {
+  rednote, toRednoteOriginal, hasTransform, ORIGIN_HOST,
+} from "../src/extractors/rednote.js";
 
 /** Build a harvest fixture. */
 function harvest({ url, title = "Fallback", canonical = null, metas = {}, media = [] }) {
@@ -694,6 +696,106 @@ test("toRednoteOriginal: the video note's poster still resolves to its file_id",
     `http://${ORIGIN_HOST}/${fileId}`);
 });
 
+// rednote spells the SAME rendering directive two ways, and until 496 only one of them
+// was stripped. `!nd_dft_wlteh_webp_3` rides on the path; `?imageView2/2/w/540/format/jpg/
+// q/75` rides in the query, and it is the query form a live `board/info` response puts on
+// every cover. Measured live 2026-09-14, both bare forms 200 `image/jpeg`: 35,900 B with
+// the query against 1,266,867 without (35x), 18,241 against 1,038,214 on a `spectrum/`
+// cover (57x), 1,013 against 86,223 on an avatar. T0 (changelog 468) was 5x and got its
+// own phase.
+//
+// The three inputs are verbatim from that response. The assertions are PROPERTIES, not the
+// literal strings: no directive survives, the path is untouched, and the url stays on the
+// host it arrived on.
+test("toRednoteOriginal: the QUERY transform is stripped, in place, on its own host", () => {
+  const transformed = [
+    "http://sns-i11.rednotecdn.com/1040g2sg324inl1490mgg4a95jgo5csvndo95q4o"
+    + "?imageView2/2/w/540/format/jpg/q/75",
+    "http://sns-i11.rednotecdn.com/spectrum/1040g34o324ieufpe0m105pj9n4ngu8ggrsklugg"
+    + "?imageView2/2/w/270/format/jpg/q/75",
+    "https://sns-avatar-qc.rednotecdn.com/avatar/1040g2jo3240vjp0jn4005pj9n4ngu8ggrcvp4mo"
+    + "?imageView2/2/w/80/format/jpg",
+  ];
+  for (const src of transformed) {
+    const out = toRednoteOriginal(src);
+    const before = new URL(src);
+    const after = new URL(out);
+    assert.ok(hasTransform(src), `${src} must carry a transform for this case to mean anything`);
+    assert.ok(!hasTransform(out), `${src} kept a rendering directive — that is the thumbnail`);
+    assert.equal(after.search, "", `${src} must come back with no query left`);
+    // De-transformed IN PLACE. Rehosting onto ORIGIN_HOST is measured to be wrong here:
+    // the bare avatar key is 200 / 86,223 B on `sns-avatar-qc` and 404 on `sns-i27`, and
+    // nothing in a 1-2 segment path proves it is a bare object key the way a signing
+    // prefix does.
+    assert.equal(after.hostname, before.hostname, `${src} must not be rehosted`);
+    assert.notEqual(after.hostname, ORIGIN_HOST);
+    assert.equal(after.pathname, before.pathname, `${src} must keep its whole key path`);
+    // Idempotent: the answer is already directive-free, so a second pass is a no-op.
+    assert.equal(toRednoteOriginal(out), out);
+  }
+});
+
+// The trap the query form walks straight into. rednote has UNSIGNED-IN-PATH families whose
+// authorization rides in the QUERY — 487 found them — so "drop the query string" would
+// strip `?sign=` off a subtitle that works today. The rule removes named transform
+// DIRECTIVES; a directive is a bare path with no `=`, which is precisely what `sign=…` is
+// not. The mixed case is the one that separates the two rules: a blanket drop passes every
+// other assertion in this file.
+test("toRednoteOriginal: `?sign=` survives — transforms are removed, query strings are not", () => {
+  const signed = "https://sns-subtitle-s10.rednotecdn.com/subtitle/1/110/1"
+    + "/01ea96475c7839f001037003a05b1783e6_12.srt"
+    + "?sign=3c5cd06cceedae2c7b4882da165997c7&t=6AABCD39";
+  assert.equal(toRednoteOriginal(signed), signed);
+  assert.ok(!hasTransform(signed), "a `sign=`/`t=` query holds no rendering directive");
+
+  for (const mixed of [
+    "http://sns-i11.rednotecdn.com/key?imageView2/2/w/540/format/jpg&sign=abc&t=6AABCD39",
+    "http://sns-i11.rednotecdn.com/key?sign=abc&imageView2/2/w/540/format/jpg&t=6AABCD39",
+  ]) {
+    const out = toRednoteOriginal(mixed);
+    assert.ok(!hasTransform(out), `${mixed} kept its directive`);
+    assert.equal(
+      new URL(out).search, "?sign=abc&t=6AABCD39",
+      `${mixed} lost the credential that authorizes it — the transform is what comes off, `
+      + `not the query`);
+  }
+});
+
+// A directive is recognised by NAME as well as by shape, and an unknown one is left alone.
+// That is the same fail-closed choice `hasSigningPrefix` makes: passing a transform through
+// costs a thumbnail, while eating something load-bearing costs the whole url. Pinned so the
+// narrowness reads as deliberate rather than as an oversight.
+test("toRednoteOriginal: an unrecognised value-less query is NOT treated as a transform", () => {
+  for (const src of [
+    "http://sns-i11.rednotecdn.com/key?someFutureFop/2/w/540",
+    "http://sns-i11.rednotecdn.com/key?abc123",
+  ]) {
+    assert.equal(
+      toRednoteOriginal(src), src,
+      `${src} names no known transform directive — leaving it alone costs a thumbnail, `
+      + `eating it could cost the url`);
+  }
+});
+
+// Reachability, end to end, on the SINGLE-capture path — the one a person uses by
+// right-clicking "Save to Atelier". `harvest.js` collects every `<img>` src on the page and
+// `rednote.extract` takes `largestMedia(harvest, CDN)`, so a page rendering a `?imageView2`
+// cover hands one straight to `toRednoteOriginal`. Asserted as the PAIR, because
+// `mediaUrlFallback` is what made 467 invisible: the thumbnail always loads, so a
+// half-stripped `mediaUrl` never surfaces as an error, it just quietly stores 35x less
+// image.
+test("rednote: a `?imageView2` cover in the DOM captures full-res, not the thumbnail", () => {
+  const rendered = "http://sns-i11.rednotecdn.com/spectrum/1040g34o324ieufpe0m105pj9n4ngu8ggrsklugg"
+    + "?imageView2/2/w/270/format/jpg/q/75";
+  const p = extractProvenance(harvest({
+    url: "https://www.rednote.com/board/69322476000000001202811f",
+    media: [img(rendered, 270, 360)],
+  }));
+  assert.ok(!hasTransform(p.mediaUrl), "the stored mediaUrl is still a 270 px render");
+  assert.equal(new URL(p.mediaUrl).search, "");
+  assert.equal(p.mediaUrlFallback, rendered, "the rendered url stays as the fetch fallback");
+});
+
 // MARK: - shared full-resolution rewrites (base.js, 6A)
 // The exact rules the DOM extractors AND the future bulk JSON mappers reuse.
 
@@ -1025,6 +1127,7 @@ test("every media-URL rewrite helper is total: non-null in, non-null out", () =>
     "https://i.pinimg.com/736x/a.jpg",
     "https://i.pinimg.com/unsized/a.jpg",
     "https://sns-img.rednotecdn.com/x!nd_dft",
+    "https://sns-img.rednotecdn.com/x?imageView2/2/w/540/format/jpg/q/75",
     "https://elsewhere.example/a.jpg",
     "not a url at all",
     "data:image/png;base64,AAAA",

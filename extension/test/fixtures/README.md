@@ -133,6 +133,25 @@ against this fixture. `size` is likewise synthetic (it clears the numeric-id flo
 is a happy accident worth keeping: a selector that sorted on it would be sorting on noise,
 and sorting on size is exactly what 020 rule 1 forbids.
 
+### rednote a third time: the transform that rides in the QUERY
+The trap has now caught **five** shapes — 483 the CDN host, 485 the `!transform` suffix,
+487 the `<timestamp>/<signature>` prefix, 488 the unsigned `/stream/` route, and 496 the
+query. `syntheticUrl` rebuilt every url as `protocol//host/segments` and therefore dropped
+the **whole query string**. That is correct for everything that normally rides in one —
+`?sign=…` and `xsec_token` are credentials — and wrong for the one thing in a query that is
+not identity at all: rednote's *other* transform spelling,
+`?imageView2/2/w/540/format/jpg/q/75`, which is what a live `board/info` response puts on
+every cover and what `toRednoteOriginal` now strips. Flattened away, such a fixture would
+again prove the opposite of what the canary asks.
+
+So a query component that is a **named transform directive** is kept verbatim and every
+other component is still dropped. The predicate is `isTransformDirective`, **imported** from
+`src/extractors/rednote.js` rather than respelled here — a private copy is precisely how the
+fixture and the rewrite come to disagree, which is the whole content of 483/485/487/488.
+Re-sanitizing every one of the 15 files in `resources/` produces **byte-for-byte** what the
+pre-496 sweep produced: no capture there carries a query transform yet, so this is coverage
+for the next `board/info` capture, not a rewrite of the current fixtures.
+
 ### Refreshing a live fixture
 ```
 node scripts/sanitize-capture.js ../resources/<raw>.json ../resources/<clean>.json

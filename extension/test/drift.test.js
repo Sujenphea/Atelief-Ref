@@ -12,6 +12,7 @@ import {
   checkTimeline, checkBoardFeed, checkBoards, checkInstagramSaved, checkThreadDetail,
   checkRednoteBoard, checkRednoteNoteDetail, checkRednoteVideo, CHECKS, fixtureStaleReminder,
 } from "../src/drift.js";
+import { ORIGIN_HOST as REDNOTE_ORIGIN_HOST } from "../src/extractors/rednote.js";
 import { tweet, conversation } from "./fixtures/x-conversation.js";
 
 const load = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url)));
@@ -253,6 +254,34 @@ test("checkRednoteBoard catches a rewrite that stops reaching the unsigned origi
   const result = checkRednoteBoard(rednotePage([row]));
   assert.equal(result.ok, false);
   assert.match(result.problems.join(" "), /not an unsigned origin-host url/);
+});
+
+// BOTH spellings of the rendering directive, because until 496 the canary asked only about
+// `!`. A live `board/info` response serves every cover as `?imageView2/2/w/540/format/jpg/
+// q/75` — measured 35-57x smaller than the same key bare — and the check could not see it.
+//
+// The inputs below are the drift this actually guards against: a rewrite that no longer
+// REACHES the url, which is 483's exact scenario (a moved CDN host switches
+// `toRednoteOriginal` off wholesale and it hands the thumbnail back untouched). A correct
+// rewrite cannot produce a surviving directive on a url it does recognise, so that half is
+// pinned on the predicate itself in `extractors.test.js`.
+test("checkRednoteBoard catches a rendering directive the rewrite never reached", () => {
+  const withSuffix = rednoteRow("a");
+  // Already on the origin host, so the origin-host rule passes and the `!` is the finding.
+  withSuffix.cover.url_default = `http://${REDNOTE_ORIGIN_HOST}/keyA!nc_n_webp_mw_1`;
+  withSuffix.cover.url_pre = "";
+  assert.match(
+    checkRednoteBoard(rednotePage([withSuffix])).problems.join(" "),
+    /transform directive survived/);
+
+  const withQuery = rednoteRow("b");
+  // A cover moved off the CDN the rewrite knows: it comes back untouched, thumbnail and
+  // all, and "it is not on the origin host" alone does not say the capture is 35x small.
+  withQuery.cover.url_default = "https://sns-i11.moved.example/keyB?imageView2/2/w/540/format/jpg/q/75";
+  withQuery.cover.url_pre = "";
+  assert.match(
+    checkRednoteBoard(rednotePage([withQuery])).problems.join(" "),
+    /transform directive survived/);
 });
 
 test("checkRednoteBoard catches a lost author name", () => {

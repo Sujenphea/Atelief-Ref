@@ -20,6 +20,10 @@
 // `<key>` IS NOT ALWAYS ONE SEGMENT — a note's `image_list` images are keyed
 // `oss-sg/spectrum/<id>`. See `toRednoteOriginal` below; getting this wrong is a
 // silent 404 masked by the fallback, not a visible failure.
+//
+// THE TRANSFORM HAS TWO SPELLINGS. `!nc_n_webp_mw_1` rides on the path; a board's
+// covers instead ride `?imageView2/2/w/540/format/jpg/q/75` in the QUERY, and that
+// one is worth 35-57x (measured 2026-09-14). Both come off; `?sign=` does not.
 
 import {
   hostname, hostIs, firstMeta, pathSegments, splitPathname, liveURL, firstPostURL,
@@ -43,6 +47,69 @@ const CDN = /(^|\/\/|\.)rednotecdn\.com\//;
 function hasSigningPrefix(segments) {
   return segments.length >= 3
     && /^\d{10,14}$/.test(segments[0]) && /^[0-9a-f]{32}$/i.test(segments[1]);
+}
+
+/**
+ * ONE `&`-separated query component that is a rendering directive rather than a
+ * parameter — rednote's second transform spelling, beside the `!…` path suffix:
+ *
+ *   ?imageView2/2/w/540/format/jpg/q/75      (a board cover)
+ *   ?imageView2/2/w/80/format/jpg            (an avatar)
+ *
+ * What makes "strip the transform" different from "strip the query string" — and the
+ * difference is load-bearing, because rednote has UNSIGNED-IN-PATH families whose
+ * authorization rides in the query (`/subtitle/1/110/1/<id>_12.srt?sign=…&t=…`, 487),
+ * so a blanket query drop breaks a url that works today:
+ *
+ *  · Components are judged ONE AT A TIME, and only a named directive is dropped. The
+ *    name list is enumerated rather than wildcarded: `imageView2` is the only spelling
+ *    live traffic shows, `imageView` and `imageMogr2` are its two siblings in the same
+ *    documented resize family and mean the same thing. Anything else is left alone,
+ *    which costs a thumbnail — the cheap direction, exactly as in `hasSigningPrefix`.
+ *    THIS is the half that keeps `sign=…` and `t=…`: neither begins with a directive
+ *    name. Both directions are pinned in `extractors.test.js`.
+ *  · `[^=]*$` then says a directive is a bare path and never a key/value pair. It is
+ *    belt-and-braces: no live shape spells a directive with an `=` in it, so dropping
+ *    this clause fails no test, and it is recorded as a deliberate surviving mutant
+ *    rather than defended with an invented case. It is kept because the cost is nil
+ *    and it states the shape the name list is standing in for.
+ */
+const TRANSFORM_QUERY = /^image(View2?|Mogr2)\/[^=]*$/i;
+
+/** True when one `&`-separated query component is a transform directive. Exported for
+ * `sanitize-capture.js`, which must KEEP this shape verbatim in a fixture (it is a
+ * rendering instruction, never identity) while still dropping every other query
+ * component, and which has flattened four such shapes already. A second copy of the
+ * spelling there is how a fixture comes to prove the opposite of what the canary asks. */
+export function isTransformDirective(part) {
+  return TRANSFORM_QUERY.test(String(part || ""));
+}
+
+/** `search` (with or without its `?`) minus every transform directive, re-spelled as a
+ * query string — `""` when nothing survives. Whatever is not a directive is kept, in
+ * order, untouched. */
+function withoutTransformQuery(search) {
+  const kept = String(search).replace(/^\?/, "").split("&")
+    .filter((part) => part && !isTransformDirective(part));
+  return kept.length ? `?${kept.join("&")}` : "";
+}
+
+/**
+ * True when `src` STILL carries a rendering directive in either spelling — the `!…`
+ * path suffix or an `imageView2`-family query.
+ *
+ * Exported because `drift.js` asserts that no swept `mediaUrl` carries one, and the two
+ * must agree by construction: a second copy of these shapes over there is how the canary
+ * comes to pass on a url this module would still rewrite. That is not hypothetical — the
+ * canary already tested `.includes("!")` and said nothing about the query form while
+ * every cover in a live `board/info` response carried it.
+ */
+export function hasTransform(src) {
+  const text = String(src || "");
+  if (text.includes("!")) return true;
+  const at = text.indexOf("?");
+  if (at < 0) return false;
+  return text.slice(at + 1).split("#")[0].split("&").some(isTransformDirective);
 }
 
 /**
@@ -82,10 +149,33 @@ function hasSigningPrefix(segments) {
  * read here — it would corroborate, not correct, and it is `""` on all 37 board
  * covers, precisely where the multi-segment keys are least expected.
  *
- * Idempotent: output always lands on `ORIGIN_HOST`, and a URL already there is
- * returned untouched rather than re-parsed (its path is a bare key, so dropping
- * two segments would mangle a multi-segment one). A path too short to hold a
- * signing prefix AND a key (`/avatar/<id>`) cannot match the shape either.
+ * THE TRANSFORM HAS TWO SPELLINGS and stripping only one of them is a 35-57x
+ * quality loss. `!nd_dft_wlteh_webp_3` rides on the path; `?imageView2/2/w/540/
+ * format/jpg/q/75` rides in the QUERY, which is what every cover in a live
+ * `board/info` response carries. Measured 2026-09-14 — both bare forms 200
+ * `image/jpeg`: a cover 35,900 B with the query, 1,266,867 B without; a
+ * `spectrum/` cover 18,241 -> 1,038,214; an avatar 1,013 -> 86,223. The query
+ * form is stripped WHEREVER it rides, signed path or not, because it is a
+ * request for a rendering and nothing else in the url depends on it.
+ *
+ * Removing the transform is NOT removing the query — see `TRANSFORM_QUERY`.
+ * rednote's unsigned-in-path subtitles are authorized by `?sign=…`, so the rule
+ * names the directives it drops and keeps everything else.
+ *
+ * A query-transformed url is de-transformed IN PLACE, on the host it came from,
+ * and NOT rehosted onto `ORIGIN_HOST`. Same reason the signing-shape guard exists:
+ * rehosting is only sound where the path is known to be a bare object key, which
+ * only the signing prefix proves. These urls have 1-2 segments and no such proof,
+ * and the measurement settles it — `sns-avatar-qc…/avatar/<key>` is 200 / 86,223 B
+ * where the same key on `ORIGIN_HOST` is 404. De-transforming in place already
+ * recovers the full-resolution original, so rehosting would buy nothing and risk
+ * everything.
+ *
+ * Idempotent: a rewritten path lands on `ORIGIN_HOST` and a URL already there is
+ * not re-split (its path is a bare key, so dropping two segments would mangle a
+ * multi-segment one), while a de-transformed url no longer carries a directive to
+ * strip. A path too short to hold a signing prefix AND a key (`/avatar/<id>`)
+ * cannot match the shape either.
  */
 export function toRednoteOriginal(src) {
   if (!src || !CDN.test(src)) return src || null;
@@ -93,14 +183,24 @@ export function toRednoteOriginal(src) {
     const url = new URL(src);
     const host = url.hostname.toLowerCase();
     if (!hostIs(host, "rednotecdn.com")) return src;
+    // The query transform comes off first and independently of the path rules, so
+    // every branch below hands back a de-transformed url. When there was nothing to
+    // strip the INPUT is handed back verbatim rather than a re-serialized copy, so
+    // passthrough stays byte-for-byte passthrough.
+    const kept = withoutTransformQuery(url.search);
+    let bare = src;
+    if (kept !== url.search) {
+      url.search = kept;
+      bare = url.toString();
+    }
     // Already canonical — the only URLs on this host are bare keys.
-    if (host === ORIGIN_HOST) return src;
+    if (host === ORIGIN_HOST) return bare;
     const segments = splitPathname(url.pathname);
     // No signing prefix to strip: the path is already the object key, whether it
-    // is a `/stream/…` mp4 or a two-segment `/avatar/<id>`. Leave it alone.
-    if (!hasSigningPrefix(segments)) return src;
+    // is a `/stream/…` mp4 or a two-segment `/avatar/<id>`. Leave the path alone.
+    if (!hasSigningPrefix(segments)) return bare;
     const key = segments.slice(2).join("/").split("!")[0];
-    if (!key) return src;
+    if (!key) return bare;
     return `http://${ORIGIN_HOST}/${key}`;
   } catch {
     return src;

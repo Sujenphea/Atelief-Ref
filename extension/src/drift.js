@@ -20,7 +20,9 @@ import {
 // The origin host is IMPORTED, never re-typed: the check below asserts every swept
 // mediaUrl lands on the host the rewrite targets, and a second copy of the string would
 // keep this check green after the rewrite had moved somewhere else.
-import { ORIGIN_HOST as REDNOTE_ORIGIN_HOST, toRednoteOriginal } from "./extractors/rednote.js";
+import {
+  ORIGIN_HOST as REDNOTE_ORIGIN_HOST, toRednoteOriginal, hasTransform as rednoteHasTransform,
+} from "./extractors/rednote.js";
 import {
   STREAM_REFUSAL, readVideoCandidates, selectStreamRung, videoCandidates, videoLadder,
 } from "./rednote-video.js";
@@ -355,8 +357,13 @@ export function checkRednoteBoard(json, { host = "www.rednote.com" } = {}) {
     problems.push(`a mediaUrl is not an unsigned origin-host url`
       + ` (expected ${REDNOTE_ORIGIN_HOST} — the key rule moved?)`);
   }
-  if (page.items.some((item) => (item.mediaUrl || "").includes("!"))) {
-    problems.push("a transform suffix survived the rewrite");
+  // BOTH transform spellings, asked of the module that strips them rather than of a
+  // second copy of the shapes: `!nd_dft_…` on the path and `?imageView2/2/w/540/…` in
+  // the query. This check tested only the `!` form while a live `board/info` response
+  // was serving the query form on every cover — a 35-57x quality loss the canary was
+  // structurally unable to see (496).
+  if (page.items.some((item) => rednoteHasTransform(item.mediaUrl))) {
+    problems.push("a transform directive survived the rewrite (`!` suffix or ?imageView2 query)");
   }
   if (page.items.some((item) => !item.mediaUrlFallback)) {
     problems.push("an item lost its signed fallback (the bare original can 404)");
@@ -436,8 +443,9 @@ export function checkRednoteNoteDetail(json, { host = "www.rednote.com" } = {}) 
     problems.push(`a mediaUrl is not an unsigned origin-host url`
       + ` (expected ${REDNOTE_ORIGIN_HOST} — the key rule moved?)`);
   }
-  if (page.items.some((item) => (item.mediaUrl || "").includes("!"))) {
-    problems.push("a transform suffix survived the rewrite");
+  // Both transform spellings — `!` suffix and `?imageView2` query — see `checkRednoteBoard`.
+  if (page.items.some((item) => rednoteHasTransform(item.mediaUrl))) {
+    problems.push("a transform directive survived the rewrite (`!` suffix or ?imageView2 query)");
   }
   if (page.items.some((item) => !item.mediaUrlFallback)) {
     problems.push("an item lost its signed fallback (the bare original can 404)");
