@@ -24,7 +24,7 @@
 
 import {
   MAX_CONCURRENCY, PACING_MS, PACING_JITTER_MS,
-  BACKOFF_BASE_MS, BACKOFF_MAX_MS, MAX_ITEM_RETRIES,
+  BACKOFF_BASE_MS, BACKOFF_MAX_MS, MAX_ITEM_RETRIES, CHECKPOINT_FAILED_ID_CAP,
 } from "./config.js";
 
 /** The five terminal per-item outcomes recorded in the job ledger ([C7]). */
@@ -179,7 +179,7 @@ export async function runSweep(driver, input, {
 
   const cfg = {
     MAX_CONCURRENCY, PACING_MS, PACING_JITTER_MS,
-    BACKOFF_BASE_MS, BACKOFF_MAX_MS, MAX_ITEM_RETRIES,
+    BACKOFF_BASE_MS, BACKOFF_MAX_MS, MAX_ITEM_RETRIES, CHECKPOINT_FAILED_ID_CAP,
     // Re-sweep early-stop (14A): stop cleanly after this many CONSECUTIVE already-known
     // (skipped) items. null/0 = disabled (X/Pinterest, and any first/resumed sweep). The
     // caller (bulk-controller) only sets it on a FRESH sweep whose prior run closed clean.
@@ -199,15 +199,46 @@ export async function runSweep(driver, input, {
   // known-set make any re-processed overlap idempotent, so an approximate resume
   // point is safe — it never double-ingests, only re-skips.
   let startCursor = null;
-  if (!scrollResumable && storage && checkpointKey) {
+  let priorFailed = null;
+  let priorFailedOverflow = false;
+  if (storage && checkpointKey) {
     const saved = await storage.load(checkpointKey);
-    if (saved && saved.cursor != null) startCursor = saved.cursor;
+    // The CURSOR is the only part a scroll-resumable driver skips (it cannot seek, so a
+    // seeded one would be a lie). The rest of the checkpoint is read on every platform:
+    // the failed set below has to survive a CHAIN of resumes, and this is its only copy.
+    if (saved && !scrollResumable && saved.cursor != null) startCursor = saved.cursor;
+    if (saved && Array.isArray(saved.failed)) priorFailed = saved.failed;
+    if (saved && saved.failedOverflow === true) priorFailedOverflow = true;
   }
 
   const counts = zeroCounts();
-  const completed = new Map();   // seq → { cursor, outcome }, pending contiguous commit
+  const completed = new Map();   // seq → { cursor, sourceId, outcome }, pending contiguous commit
   let committedSeq = -1;         // highest seq whose whole prefix is terminal
   let committedCursor = startCursor;
+  // WHICH ITEM the watermark sits on, checkpointed beside the cursor (changelog 509). The
+  // cursor says where to resume ENUMERATION and a scroll-resumable driver has none at all,
+  // so neither answers "what had the halted run actually finished?" — the question a
+  // resume's per-item optimisations have to ask before they may trust anything about the
+  // walk they are repeating. The engine stays platform-blind here: it persists the opaque
+  // sourceId it was handed and reads nothing into it.
+  let committedSourceId = null;
+  // EVERY item this sweep could not land, and every one the run before it could not land
+  // (changelog 509). A resumed sweep's per-item optimisations skip what the app already
+  // knows, and a note whose 9th image failed while the other 8 landed is in the app's
+  // known-set while still owing that image — so it has to be nameable, or a resume skips it
+  // and then closes `clean` over the failure, which launders it into the marker the NEXT
+  // fresh sweep arms off. Seeded from the checkpoint because that laundering happens one
+  // level up too: run 2 fails nothing of its own, and without the seed run 3 loses the
+  // exclusion.
+  //
+  // Recorded as they happen rather than over the committed prefix: a failure past the
+  // watermark is a failure, it costs one short string to carry, and deciding which ones are
+  // "safe" to leave out is the kind of cleverness this whole mechanism exists to avoid.
+  const failedSourceIds = new Set(priorFailed || []);
+  // Once this is true the set is INCOMPLETE and no reader may trust it — see the cap in
+  // config.js. It is persisted, and it is sticky across resumes for the same reason the set
+  // is seeded: the run that inherits a truncated set cannot un-truncate it.
+  let failedOverflow = priorFailedOverflow;
   let lastSavedSeq = -1;
   let halting = false;
   let appHaltStatus = null;      // "paused" | "halted" if the app (7A) halted us
@@ -263,6 +294,7 @@ export async function runSweep(driver, input, {
       committedSeq += 1;
       const entry = completed.get(committedSeq);
       committedCursor = entry.cursor;
+      committedSourceId = entry.sourceId ?? null;
       // Count CONSECUTIVE skips over the contiguous prefix (enumeration order, immune to
       // out-of-order completion). A long run of already-known items means we've reached
       // previously-synced territory on a newest-save-first feed → the sweep is effectively
@@ -281,7 +313,17 @@ export async function runSweep(driver, input, {
     if (advanced && storage && checkpointKey && committedSeq > lastSavedSeq) {
       try {
         await storage.save(checkpointKey, {
-          cursor: scrollResumable ? null : committedCursor, counts: { ...counts },
+          cursor: scrollResumable ? null : committedCursor,
+          // NOT nulled for a scroll-resumable driver, unlike the cursor: this is not a
+          // resume token and nothing seeks to it. It names the last item the halted run
+          // finished, which is exactly what such a driver's null cursor leaves unsaid.
+          sourceId: committedSourceId,
+          // Everything this sweep (and the run before it) could not land, so a resume can
+          // exclude the notes that own them from its pre-check. `failedOverflow` says the
+          // list is incomplete and must not be trusted at all.
+          failed: [...failedSourceIds],
+          failedOverflow,
+          counts: { ...counts },
         });
         lastSavedSeq = committedSeq; // mark saved ONLY on success
       } catch (error) {
@@ -294,16 +336,35 @@ export async function runSweep(driver, input, {
     }
   }
 
-  async function record(outcome, seq, cursor) {
+  /** Name an item the sweep could not land, or — at the cap — record that the set can no
+   * longer name them all. Truncating silently is the one thing this must not do: a dropped
+   * id is a note a resume skips while it still owes an image. */
+  function recordFailed(sourceId) {
+    if (sourceId == null) return;
+    if (!failedSourceIds.has(sourceId) && failedSourceIds.size >= cfg.CHECKPOINT_FAILED_ID_CAP) {
+      if (!failedOverflow) {
+        failedOverflow = true;
+        log("failed-item set hit its cap of", cfg.CHECKPOINT_FAILED_ID_CAP,
+          "— a resume of this sweep re-walks in full rather than trusting a partial set");
+      }
+      return;
+    }
+    failedSourceIds.add(sourceId);
+  }
+
+  async function record(outcome, seq, item) {
     counts[outcome] += 1;
-    completed.set(seq, { cursor, outcome });
+    if (outcome === OUTCOMES.retryableFailed || outcome === OUTCOMES.permanentFailed) {
+      recordFailed(item.sourceId);
+    }
+    completed.set(seq, { cursor: item.cursor, sourceId: item.sourceId ?? null, outcome });
     if (onProgress) onProgress({ ...counts });
     await checkpoint();
   }
 
   async function processItem(item, seq) {
     if (knownSet.has(item.sourceId)) {           // [P14] skip — no pace, no relay
-      await record(OUTCOMES.skipped, seq, item.cursor);
+      await record(OUTCOMES.skipped, seq, item);
       return;
     }
 
@@ -337,7 +398,7 @@ export async function runSweep(driver, input, {
       if (outcome === OUTCOMES.ingested || outcome === OUTCOMES.deduped) {
         knownSet.add(item.sourceId);               // dedup a repeat later this sweep
       }
-      await record(outcome, seq, item.cursor);
+      await record(outcome, seq, item);
       if (signal === "halt") {                      // [C7] fatal wall / [7A] app halt
         halting = true;
         if (appStatus) appHaltStatus = appStatus;   // remember Pause vs Cancel intent

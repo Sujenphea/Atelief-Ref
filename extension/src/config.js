@@ -189,11 +189,50 @@ export const FEED_RESET_SETTLE_MS = 1200;
  */
 export const MAX_VIDEO_CANDIDATES = 4;
 
+/**
+ * How often a running sweep pings `POST /jobs/{id}/progress` to say it is alive.
+ *
+ * The app pauses any `open` job whose `updated_at` is older than its
+ * `IngestionModel.staleSweepSeconds` — 90 seconds — and until this existed the ONLY
+ * thing that bumped `updated_at` was an item being RELAYED. A live sweep is quiet for
+ * far longer than 90s at a time: a dedup skip takes no relay and no pacing, and
+ * rednote's note-open pass spends `NOTE_OPEN_PACING_MS` + jitter per note plus up to
+ * `NOTE_OPEN_TIMEOUT_MS` waiting for each one, relaying nothing whenever the notes it
+ * opens hold only already-known items. So the app paused jobs underneath running
+ * sweeps, the next relay came back `jobStatus: "paused"`, and the sweep halted itself
+ * two items into a 116-note board with no error to show for it.
+ *
+ * 30s: a THIRD of the app's window, so two consecutive pings can be lost — a torn-down
+ * SW, a busy tab, a slow loopback — before a live sweep looks dead. Going higher buys
+ * nothing (the ping is one small POST to 127.0.0.1) and eats the margin; going much
+ * lower only adds traffic. It must stay WELL under 90s whatever else changes: the two
+ * numbers sit either side of a process boundary and cannot be one constant, so the
+ * app's `staleSweepSeconds` names this one and this one names it back.
+ */
+export const SWEEP_HEARTBEAT_MS = 30_000;
+
 /** Per-item retry budget for a `retryableFailed` outcome. On exhaustion the item
  * is recorded `retryableFailed` (a later sweep re-attempts it) and the sweep moves
  * on — one bad item NEVER aborts the sweep `[C7]`. Distinct from a `halt` signal
  * (auth wall / app unreachable), which DOES pause the whole sweep. */
 export const MAX_ITEM_RETRIES = 4;
+
+/** How many FAILED sourceIds one checkpoint may carry (changelog 509). A resumed sweep
+ * excludes the notes that own them from its note-level pre-check, so this set is what stops
+ * a resume skipping a note that still owes an image — and it must survive a chain of
+ * resumes, which is what makes it grow.
+ *
+ * 200 is half `NOTE_OPEN_BUDGET`, and the size is not the reason for the cap: 200 rednote
+ * ids is ~6 KB in `storage.local`, nothing. It is a THRESHOLD OF MEANING. A run that
+ * stranded 200 items is not a sweep with some stray failures, it is a sweep against a dead
+ * CDN cookie or a full disk, and the cheap correct answer for one of those is the full
+ * re-walk the overflow forces — the pre-check is an optimisation, and this is the point
+ * where the board has stopped being the kind of thing it optimises.
+ *
+ * Exceeding it must FAIL SAFE (the reader disarms entirely), never truncate: a silently
+ * dropped id is a note skipped while it still owes an image, which is the exact loss the
+ * set exists to prevent. */
+export const CHECKPOINT_FAILED_ID_CAP = 200;
 
 // ---------------------------------------------------------------------------
 // Per-platform pacing overrides (002 · 13A). The globals above are the default;

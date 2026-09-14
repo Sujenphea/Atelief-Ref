@@ -30,6 +30,11 @@ public protocol JobLedger: Sendable {
     ) async throws -> JobItem
     func knownSourceIDs(forJob jobID: UUID) async throws -> Set<String>
     func setJobStatus(jobID: UUID, to status: JobStatus) async throws
+    /// A running sweep's heartbeat: raise its skipped tally, and keep an `open` job
+    /// off the 90s staleness reconciler. Returns the job's current status; it never
+    /// changes it. `.notFound` if the job is absent.
+    @discardableResult
+    func recordJobProgress(jobID: UUID, skipped: Int, now: Date) async throws -> JobStatus
     /// A job's current lifecycle status — the relay feedback the ingest route
     /// stamps on each tagged item's response so a running sweep honours an app-side
     /// pause/cancel (7A). `.notFound` if the job is absent.
@@ -72,6 +77,19 @@ public struct CompleteJobRequest: Codable, Equatable, Sendable {
     }
 }
 
+/// `POST /jobs/{id}/progress` body — one heartbeat from a running sweep. `skipped`
+/// is the live count of already-known items the sweep has passed over, which the app
+/// cannot derive (a dedup skip is never relayed, so it leaves no `job_item`). Optional
+/// and defaulting to 0: a sweep in a relay-free stretch with nothing new to report is
+/// still saying it is alive, which is the point of the route.
+public struct JobProgressRequest: Codable, Equatable, Sendable {
+    public var skipped: Int?
+
+    public init(skipped: Int? = nil) {
+        self.skipped = skipped
+    }
+}
+
 // MARK: - Response DTOs
 
 /// The server's own resource caps, surfaced to the extension at job-open (8A) so
@@ -93,16 +111,21 @@ public struct JobResponse: Codable, Equatable, Sendable {
     public var jobId: UUID?
     public var caps: CapsDTO?
     public var sourceIds: [String]?
+    /// The job's lifecycle status after a `/progress` ping, so the sweep learns it has
+    /// been paused or cancelled without waiting for its next relay. Same field name as
+    /// ``CaptureResponse/jobStatus`` — one spelling for one fact across both routes.
+    public var jobStatus: String?
     public var error: String?
 
     public init(
         status: String, jobId: UUID? = nil, caps: CapsDTO? = nil,
-        sourceIds: [String]? = nil, error: String? = nil
+        sourceIds: [String]? = nil, jobStatus: String? = nil, error: String? = nil
     ) {
         self.status = status
         self.jobId = jobId
         self.caps = caps
         self.sourceIds = sourceIds
+        self.jobStatus = jobStatus
         self.error = error
     }
 
@@ -114,6 +137,11 @@ public struct JobResponse: Codable, Equatable, Sendable {
     }
     public static func ok() -> JobResponse {
         JobResponse(status: "ok")
+    }
+    /// A heartbeat was recorded. Carries the job's CURRENT status (the ping never
+    /// changes it) so the extension can see a pause/cancel it has not relayed into yet.
+    public static func progress(jobStatus: JobStatus) -> JobResponse {
+        JobResponse(status: "progress", jobStatus: jobStatus.rawValue)
     }
     public static func error(_ message: String) -> JobResponse {
         JobResponse(status: "error", error: message)
@@ -135,6 +163,7 @@ public enum JobDecodeError: Error, Equatable {
     case malformedJSON
     case unknownPlatform(String)
     case invalidStatus(String)
+    case invalidCount(Int)
 
     public var message: String {
         switch self {
@@ -142,6 +171,8 @@ public enum JobDecodeError: Error, Equatable {
         case .unknownPlatform(let value): return "Unknown platform '\(value)'."
         case .invalidStatus(let value):
             return "Invalid job status '\(value)' (expected complete, paused, or halted)."
+        case .invalidCount(let value):
+            return "Invalid skipped count \(value) (must not be negative)."
         }
     }
 }
@@ -183,5 +214,22 @@ public enum JobDecoder {
         case "halted": return .halted
         default: throw JobDecodeError.invalidStatus(raw)
         }
+    }
+
+    /// Validate a `POST /jobs/{id}/progress` body into a skipped count. An empty body
+    /// or an absent `skipped` is 0 (a bare "still here"). A NEGATIVE count is rejected
+    /// rather than tolerated: `MAX` would silently absorb it, leaving a client bug that
+    /// under-reports progress with nothing anywhere to show for it.
+    public static func decodeProgress(body: Data) throws -> Int {
+        guard !body.isEmpty else { return 0 }
+        let request: JobProgressRequest
+        do {
+            request = try JSONDecoder().decode(JobProgressRequest.self, from: body)
+        } catch {
+            throw JobDecodeError.malformedJSON
+        }
+        let skipped = request.skipped ?? 0
+        guard skipped >= 0 else { throw JobDecodeError.invalidCount(skipped) }
+        return skipped
     }
 }

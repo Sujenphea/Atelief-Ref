@@ -139,11 +139,30 @@ export function noteIdOf(item) {
 export function knownNoteIndex(knownSet) {
   const notes = new Set();
   for (const id of knownSet || []) {
-    if (typeof id !== "string") continue;
-    const cut = id.indexOf(":");
-    if (cut > 0) notes.add(id.slice(0, cut));
+    // A COVER names its own note and must not count (the paragraph above); only a child —
+    // an id with a `:` in it — says its note was expanded. Where the note ends is
+    // `noteOfSourceId`'s to know, so there is one reading of a rednote key, not two.
+    if (typeof id === "string" && id.includes(":")) {
+      const note = noteOfSourceId(id);
+      if (note) notes.add(note);
+    }
   }
   return notes;
+}
+
+/** The note a SOURCE ID belongs to, cover (`<note_id>`) or expanded child
+ * (`<note_id>:<index>`, `<note_id>:v`) alike — the same cut `knownNoteIndex` makes, minus
+ * its "only children count" rule. `null` for anything that names no note.
+ *
+ * Its other caller is the resume boundary (changelog 509), which is handed the sourceId of
+ * the last committed item and has to find that item's note whichever of the two it is: the
+ * halted run may have stopped on a cover it had not expanded yet, or on the third child of
+ * a note it was halfway through. */
+export function noteOfSourceId(sourceId) {
+  if (typeof sourceId !== "string" || sourceId === "") return null;
+  const cut = sourceId.indexOf(":");
+  if (cut === 0) return null;
+  return cut > 0 ? sourceId.slice(0, cut) : sourceId;
 }
 
 /**
@@ -270,6 +289,12 @@ export function createNoteExpander({
 } = {}) {
   /** null = the note-level pre-check is DISARMED (the default). A Set = armed. */
   let knownNotes = null;
+  /** The note the index is armed UP TO on a resume, and null on a fresh sweep (where it is
+   * armed for the whole walk). See `arm` and the boundary in `attemptNote`. */
+  let boundaryNote = null;
+  /** Notes that own an item a previous run of this sweep could not land. The index says
+   * they are done and they are not — see `arm`. */
+  let owingNotes = null;
   const counts = {
     // Every note this pass SET OUT to expand — the denominator of "expanded N of M", and
     // the only number that makes the others readable. A note the sweep was never going to
@@ -433,7 +458,26 @@ export function createNoteExpander({
     // page boundary or from a re-ask that raced its own answer. Yields NOTHING: whatever
     // this note was going to contribute has already been contributed exactly once.
     if (done.has(noteId)) { note("duplicate"); return settled([]); }
-    if (knownNotes && knownNotes.has(noteId)) { counts.skippedKnown += 1; return finish(noteId, []); }
+    // THE HALT BOUNDARY (changelog 509). A resumed sweep re-walks the board from the top,
+    // so the stretch in front of the watermark is territory the halted run finished and the
+    // index may be trusted over it. At the watermark's own note it may not: `knownNoteIndex`
+    // reads ONE landed child as a done note, and the note the halt landed in is precisely
+    // the one that can have landed 3 of its 9. So the index is dropped here — for this note,
+    // which is re-opened, and for every note after it.
+    if (knownNotes && noteId === boundaryNote) {
+      knownNotes = null;
+      log("rednote: note-level pre-check reached the halt boundary at", noteId,
+        "— every note from here is re-opened");
+    }
+    // …and a note that OWES something is re-opened wherever it sits, boundary or no
+    // boundary. Its images are in the known-set because eight of the nine landed; the ninth
+    // failed, and the index cannot tell those apart. Checked here rather than subtracted
+    // from the index in `arm`, so `skippedKnown` still counts what the index skipped and
+    // the two reasons a note is opened stay legible in the stats.
+    if (knownNotes && knownNotes.has(noteId) && !(owingNotes && owingNotes.has(noteId))) {
+      counts.skippedKnown += 1;
+      return finish(noteId, []);
+    }
     if (kind === "video" && !resolveVideo) { note("video"); counts.refused += 1; return finish(noteId, [item]); }
     // Past this line the note is a CANDIDATE: the sweep meant to expand it, and whether
     // it did is this pass's coverage rather than a decision it made on purpose. A note
@@ -582,10 +626,35 @@ export function createNoteExpander({
      * Arm (or leave disarmed) the note-level known-set pre-check at sweep start. The
      * controller decides `armed` from the clean marker's `clean` AND its recorded MODE —
      * a cover-only prior sweep must never arm an expansion sweep's pre-check.
+     *
+     * `resumeFrom` is the sourceId of the last item the RESUMED run committed (null on a
+     * fresh sweep). It arms the index only as far as that item's note: see the boundary in
+     * `attemptNote` for why the note itself is re-opened rather than skipped.
+     *
+     * A walk that never MEETS that note — it was deleted, or the board reordered under the
+     * resume — keeps the index armed to the end, and that is the accepted outcome rather
+     * than an oversight. What the boundary protects against is a note the halt left
+     * half-expanded, and a note with no landed child is not in the index to begin with, so
+     * it cannot be wrongly skipped however far the walk runs. What survives is the residual
+     * R14 already names and already accepts: a note an EARLIER run expanded partially,
+     * which is what arming only after a clean completion is for.
+     *
+     * `excluded` is the notes that own an item a previous run of this sweep FAILED to land
+     * (the controller maps the checkpoint's failed sourceIds through `noteOfSourceId`).
+     * They beat the index wherever they sit — a note with eight images landed and a ninth
+     * failed is in the known-set and is not done, and nothing else here can see the
+     * difference. The failure the exclusion protects is not this run's to report, so it
+     * cannot be inferred from anything the expander has: it has to be handed over.
      */
-    arm({ knownSet = null, armed = false } = {}) {
+    arm({ knownSet = null, armed = false, resumeFrom = null, excluded = null } = {}) {
       knownNotes = armed && knownSet ? knownNoteIndex(knownSet) : null;
-      if (knownNotes) log("rednote: note-level pre-check armed over", knownNotes.size, "expanded notes");
+      boundaryNote = knownNotes ? noteOfSourceId(resumeFrom) : null;
+      owingNotes = knownNotes && excluded ? new Set(excluded) : null;
+      if (knownNotes) {
+        log("rednote: note-level pre-check armed over", knownNotes.size, "expanded notes",
+          boundaryNote ? `, up to the halt boundary at ${boundaryNote}` : "",
+          owingNotes && owingNotes.size ? `, less ${owingNotes.size} that still owe an image` : "");
+      }
       return knownNotes ? knownNotes.size : 0;
     },
     /**

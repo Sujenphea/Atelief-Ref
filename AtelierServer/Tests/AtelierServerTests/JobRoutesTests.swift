@@ -25,6 +25,7 @@ final class FakeJobLedger: JobLedger, @unchecked Sendable {
     private var _createdPlatforms: [Platform] = []
     private var _recorded: [(jobID: UUID, sourceID: String, status: JobItemStatus, blobHash: String?)] = []
     private var _statusUpdates: [(jobID: UUID, status: JobStatus)] = []
+    private var _progressPings: [(jobID: UUID, skipped: Int)] = []
     private var _known: Set<UUID> = []
     /// The source ids `knownSourceIDs` returns for a known job (settable by a test).
     var knownSources: [String] = []
@@ -61,6 +62,13 @@ final class FakeJobLedger: JobLedger, @unchecked Sendable {
         noteStatus((jobID, status))
     }
 
+    @discardableResult
+    func recordJobProgress(jobID: UUID, skipped: Int, now: Date) async throws -> JobStatus {
+        try requireKnown(jobID)
+        notePing((jobID, skipped))
+        return currentStatus     // realistic: a ping reports the status, never sets it
+    }
+
     func jobStatus(forJob jobID: UUID) async throws -> JobStatus {
         try requireKnown(jobID)   // realistic: the real ledger throws .notFound
         return currentStatus
@@ -84,6 +92,9 @@ final class FakeJobLedger: JobLedger, @unchecked Sendable {
     private func noteStatus(_ update: (jobID: UUID, status: JobStatus)) {
         lock.lock(); _statusUpdates.append(update); lock.unlock()
     }
+    private func notePing(_ ping: (jobID: UUID, skipped: Int)) {
+        lock.lock(); _progressPings.append(ping); lock.unlock()
+    }
 
     private func requireKnown(_ jobID: UUID) throws {
         lock.lock(); let known = _known.contains(jobID); lock.unlock()
@@ -96,6 +107,7 @@ final class FakeJobLedger: JobLedger, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }; return _recorded
     }
     var statusUpdates: [(jobID: UUID, status: JobStatus)] { lock.lock(); defer { lock.unlock() }; return _statusUpdates }
+    var progressPings: [(jobID: UUID, skipped: Int)] { lock.lock(); defer { lock.unlock() }; return _progressPings }
 }
 
 @Suite("JobRoutes (pure, fake ledger)")
@@ -233,6 +245,73 @@ struct JobRoutesFakeTests {
             jobID: fake.createdID, body: body(CompleteJobRequest(status: "reopen")))
         #expect(result.statusCode == 400)
         #expect(fake.statusUpdates.isEmpty)
+    }
+
+    // MARK: the sweep heartbeat
+
+    @Test("POST progress → 200 with the job's status, and the count reaches the ledger")
+    func progressRecordsAndReportsStatus() async throws {
+        let fake = FakeJobLedger()
+        _ = try await fake.createJob(platform: .rednote, scope: nil, totalEstimate: nil)
+        let result = await routes(fake).handleProgress(
+            jobID: fake.createdID, body: body(JobProgressRequest(skipped: 82)))
+
+        #expect(result.statusCode == 200)
+        #expect(result.response.status == "progress")
+        #expect(result.response.jobStatus == "open")
+        #expect(fake.progressPings.map(\.skipped) == [82])
+        #expect(fake.progressPings.map(\.jobID) == [fake.createdID])
+        // A ping is not a transition — nothing here may set the job's status.
+        #expect(fake.statusUpdates.isEmpty)
+    }
+
+    @Test("POST progress surfaces a pause the sweep hasn't relayed into yet")
+    func progressSurfacesPause() async throws {
+        let fake = FakeJobLedger()
+        _ = try await fake.createJob(platform: .rednote, scope: nil, totalEstimate: nil)
+        fake.currentStatus = .paused
+        let result = await routes(fake).handleProgress(
+            jobID: fake.createdID, body: body(JobProgressRequest(skipped: 1)))
+        #expect(result.statusCode == 200)
+        #expect(result.response.jobStatus == "paused")
+    }
+
+    @Test("POST progress with an EMPTY body is a bare heartbeat (skipped 0)")
+    func progressEmptyBody() async throws {
+        let fake = FakeJobLedger()
+        _ = try await fake.createJob(platform: .rednote, scope: nil, totalEstimate: nil)
+        // A sweep scrolling or waiting on a note-open has nothing new to report and is
+        // exactly the sweep the staleness reconciler was pausing — it must still count.
+        let result = await routes(fake).handleProgress(jobID: fake.createdID, body: Data())
+        #expect(result.statusCode == 200)
+        #expect(fake.progressPings.map(\.skipped) == [0])
+    }
+
+    @Test("POST progress with a NEGATIVE count → 400, nothing recorded")
+    func progressNegativeCount() async throws {
+        let fake = FakeJobLedger()
+        _ = try await fake.createJob(platform: .rednote, scope: nil, totalEstimate: nil)
+        let result = await routes(fake).handleProgress(
+            jobID: fake.createdID, body: body(JobProgressRequest(skipped: -3)))
+        #expect(result.statusCode == 400)
+        #expect(result.response.status == "error")
+        #expect(fake.progressPings.isEmpty)   // MAX would have absorbed it silently
+    }
+
+    @Test("POST progress with malformed JSON → 400")
+    func progressMalformed() async throws {
+        let fake = FakeJobLedger()
+        _ = try await fake.createJob(platform: .rednote, scope: nil, totalEstimate: nil)
+        let result = await routes(fake).handleProgress(jobID: fake.createdID, body: Data("{".utf8))
+        #expect(result.statusCode == 400)
+        #expect(fake.progressPings.isEmpty)
+    }
+
+    @Test("POST progress for an absent job → 404")
+    func progressNotFound() async throws {
+        let result = await routes(FakeJobLedger()).handleProgress(jobID: UUID(), body: Data())
+        #expect(result.statusCode == 404)
+        #expect(result.response.status == "error")
     }
 
     @Test("POST complete for an absent job → 404")

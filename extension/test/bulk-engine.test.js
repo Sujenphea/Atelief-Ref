@@ -170,6 +170,132 @@ test("checkpoint: cursor advances contiguously and persists progress", async () 
   assert.deepEqual(storage.saves.map((s) => s.value.cursor), ["c0", "c1", "c2"]);
 });
 
+test("checkpoint: the WATERMARK ITEM's sourceId rides beside the cursor (509)", async () => {
+  // The cursor says where to resume enumeration; it does not say what the halted run had
+  // finished, and for a scroll-resumable driver it is null and says nothing at all. The
+  // sourceId is that second fact, and a resume's per-item optimisations are built on it.
+  const { driver } = driverFrom([item("a", "c0"), item("b", "c1"), item("c", "c2")]);
+  const storage = memStorage();
+  const relay = async () => ({ outcome: OUTCOMES.ingested });
+  const { opts } = serialOpts({ relay, storage, checkpointKey: "job:1" });
+
+  await runSweep(driver, "in", opts);
+
+  assert.deepEqual(storage.saves.map((s) => s.value.sourceId), ["a", "b", "c"]);
+});
+
+test("checkpoint: a SKIPPED item is a watermark like any other", async () => {
+  // Every terminal outcome moves the watermark, so the sourceId has to follow it there too
+  // — a resumed rednote sweep skips its way back to the halt point, and a boundary that
+  // named the last INGESTED item would sit far behind the one the run actually reached.
+  const { driver } = driverFrom([item("a", "c0"), item("b", "c1")]);
+  const storage = memStorage();
+  const relay = async () => ({ outcome: OUTCOMES.ingested });
+  const { opts } = serialOpts({
+    relay, storage, checkpointKey: "job:s", knownSet: new Set(["b"]),
+  });
+
+  await runSweep(driver, "in", opts);
+
+  assert.deepEqual(storage.saves.map((s) => s.value.sourceId), ["a", "b"]);
+});
+
+test("checkpoint: every item the sweep could not land is NAMED in it (509)", async () => {
+  // A note whose 9th image failed is in the app's known-set on the strength of the other
+  // eight. Only this list can tell a resume it still owes one.
+  const { driver } = driverFrom([item("a"), item("b"), item("c"), item("d")]);
+  const storage = memStorage();
+  const relay = async (it) => {
+    if (it.sourceId === "b") return { outcome: OUTCOMES.permanentFailed };
+    if (it.sourceId === "d") return { outcome: OUTCOMES.retryableFailed };
+    return { outcome: OUTCOMES.ingested };
+  };
+  const { opts } = serialOpts({ relay, storage, checkpointKey: "job:f" });
+
+  await runSweep(driver, "in", opts);
+
+  const last = storage.saves.at(-1).value;
+  assert.deepEqual(last.failed, ["b", "d"], "both kinds of failure, and nothing else");
+  assert.equal(last.failedOverflow, false);
+});
+
+test("checkpoint: the failed set is SEEDED from the checkpoint, so it survives a chain of resumes", async () => {
+  // The laundering, one level up: run 2 skips the note run 1 could not finish, fails
+  // nothing of its own, and without the seed writes an empty list — so run 3 is back to
+  // skipping a note that still owes an image, with nothing left that remembers.
+  const { driver } = driverFrom([item("a")]);
+  const storage = memStorage({
+    "job:chain": { cursor: null, sourceId: "old", failed: ["note-1:8"], counts: {} },
+  });
+  const relay = async () => ({ outcome: OUTCOMES.ingested });
+  const { opts } = serialOpts({ relay, storage, checkpointKey: "job:chain" });
+
+  await runSweep(driver, "in", opts);
+
+  assert.deepEqual(storage.saves.at(-1).value.failed, ["note-1:8"]);
+});
+
+test("checkpoint: at the cap the failed set says so rather than dropping ids", async () => {
+  // Fail SAFE: a truncated list reads as a complete one, and the id it dropped is exactly
+  // the note that would then be skipped still owing an image. The reader disarms on the
+  // flag; it never gets a partial list to half-trust.
+  const items = [item("f0"), item("f1"), item("f2")];
+  const { driver } = driverFrom(items);
+  const storage = memStorage();
+  const relay = async () => ({ outcome: OUTCOMES.permanentFailed });
+  const { opts } = serialOpts({
+    relay, storage, checkpointKey: "job:cap",
+    config: { MAX_CONCURRENCY: 1, PACING_MS: 0, PACING_JITTER_MS: 0, CHECKPOINT_FAILED_ID_CAP: 2 },
+  });
+
+  await runSweep(driver, "in", opts);
+
+  const last = storage.saves.at(-1).value;
+  assert.equal(last.failedOverflow, true);
+  assert.equal(last.failed.length, 2, "capped, and the overflow flag is what says so");
+});
+
+test("checkpoint: an overflowed set stays overflowed across a resume", async () => {
+  // The run that inherits a truncated list cannot un-truncate it, so the flag is as sticky
+  // as the list is seeded — otherwise resume 2 reads a short list as a complete one.
+  const { driver } = driverFrom([item("a")]);
+  const storage = memStorage({
+    "job:of": { cursor: null, failed: ["x"], failedOverflow: true, counts: {} },
+  });
+  const relay = async () => ({ outcome: OUTCOMES.ingested });
+  const { opts } = serialOpts({ relay, storage, checkpointKey: "job:of" });
+
+  await runSweep(driver, "in", opts);
+
+  assert.equal(storage.saves.at(-1).value.failedOverflow, true);
+});
+
+test("checkpoint: the sourceId never runs ahead of the contiguous prefix either", async () => {
+  // The same trap the cursor has: item N+1 can finish first, and committing ITS id would
+  // name a boundary past an item that never landed — on rednote, skipping the note that
+  // was in flight when the sweep died.
+  const { driver } = driverFrom([item("a", "c0"), item("b", "c1")]);
+  const gates = { a: deferred(), b: deferred() };
+  const relay = async (it) => { await gates[it.sourceId].promise; return { outcome: OUTCOMES.ingested }; };
+  const storage = memStorage();
+  const { sleep } = recordingSleep();
+
+  const done = runSweep(driver, "in", {
+    relay, storage, checkpointKey: "job:o",
+    sleep, random: () => 0,
+    config: { MAX_CONCURRENCY: 2, PACING_MS: 0, PACING_JITTER_MS: 0 },
+  });
+
+  await new Promise((r) => setTimeout(r, 0));
+  gates.b.resolve();                                  // seq 1 finishes first
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(storage.saves.length, 0, "b's id must not be committed over an unfinished a");
+  gates.a.resolve();
+  await done;
+
+  assert.deepEqual(storage.saves.map((s) => s.value.sourceId), ["b"], "one save, the whole prefix");
+});
+
 test("checkpoint: a storage.save failure is non-fatal — the sweep still completes (8A)", async () => {
   const { driver } = driverFrom([item("a"), item("b")]);
   const relay = async () => ({ outcome: OUTCOMES.ingested });

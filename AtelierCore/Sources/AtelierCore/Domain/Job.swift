@@ -58,6 +58,17 @@ public struct Job: Sendable, Equatable, Hashable, Codable, Identifiable {
     public var totalEstimate: Int?
     /// Items whose bytes have landed (`ingested` + `deduped`), recomputed in-txn.
     public var ingestedCount: Int
+    /// Items the running sweep skipped as already-known (P14) — reported by the
+    /// extension's progress ping, not derived from `job_item`.
+    ///
+    /// It CANNOT be derived from them: a dedup skip is decided in the browser against
+    /// the known-set and never relayed, so it leaves no row here to count. The Sweeps
+    /// tab read `job_item`'s `skipped` tally instead, and that status is one nothing
+    /// writes — so a re-sweep of an already-imported board reported 0 skipped while it
+    /// skipped its way through the whole thing.
+    ///
+    /// Raised with `MAX`, never assigned — see ``AppServices/recordJobProgress(jobID:skipped:now:)``.
+    public var skippedCount: Int
     /// When the sweep was opened.
     public var createdAt: Date
     /// Last progress/status change.
@@ -76,6 +87,7 @@ public struct Job: Sendable, Equatable, Hashable, Codable, Identifiable {
         case id, platform, scope, status
         case totalEstimate = "total_estimate"
         case ingestedCount = "ingested_count"
+        case skippedCount = "skipped_count"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case clearedAt = "cleared_at"
@@ -88,6 +100,7 @@ public struct Job: Sendable, Equatable, Hashable, Codable, Identifiable {
         status: JobStatus = .open,
         totalEstimate: Int? = nil,
         ingestedCount: Int = 0,
+        skippedCount: Int = 0,
         createdAt: Date,
         updatedAt: Date,
         clearedAt: Date? = nil
@@ -98,6 +111,7 @@ public struct Job: Sendable, Equatable, Hashable, Codable, Identifiable {
         self.status = status
         self.totalEstimate = totalEstimate
         self.ingestedCount = ingestedCount
+        self.skippedCount = skippedCount
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.clearedAt = clearedAt

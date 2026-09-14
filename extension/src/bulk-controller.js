@@ -14,7 +14,7 @@
 // call at the foot hands it the `browser.js` shim.
 
 import { runSweep, classifyIngestResult } from "./bulk-engine.js";
-import { PLATFORM_PACING } from "./config.js";
+import { PLATFORM_PACING, SWEEP_HEARTBEAT_MS } from "./config.js";
 import {
   BULK, START, TIMELINE_MESSAGE_SOURCE, TIMELINE_REPLAY_SOURCE,
   REDNOTE_FEED_MESSAGE_SOURCE, REDNOTE_REPLAY_SOURCE, readStartMessage,
@@ -30,7 +30,7 @@ import { createRednoteSource } from "./rednote-source.js";
 import { isNoteDetailRequest } from "./bulk-rednote.js";
 import {
   createNoteExpander, createPageFeedResetter, createPageNoteDriver, createPageStepScroller,
-  isRednoteChallenge,
+  isRednoteChallenge, noteOfSourceId,
 } from "./rednote-detail-client.js";
 import { readVideoCandidates } from "./rednote-video.js";
 import { browser } from "./browser.js";
@@ -60,6 +60,11 @@ import { browser } from "./browser.js";
 export async function runBulkSweep(spec, {
   transport, driver, storage = null, config = {}, onProgress = null, sleep, random, log = () => {},
   earlyStopThreshold = null, expansion = null,
+  // The heartbeat's clock, injected for the same reason `sleep` and `random` are: a
+  // test that has to wait 30 real seconds to watch a ping fire is a test nobody runs.
+  // Defaulted to the real pair, so the live bootstrap passes neither.
+  setTimer = (fn, ms) => setInterval(fn, ms),
+  clearTimer = (id) => clearInterval(id),
 }) {
   const { platform, input, scope = null, totalEstimate = null, resolveVideo = false } = spec;
 
@@ -68,6 +73,7 @@ export async function runBulkSweep(spec, {
   // saved cursor and force a full re-enumeration on resume. Keyed this way, a
   // killed run's cursor is exactly what the next run reads back.
   const checkpointKey = sweepCheckpointKey({ platform, scope, input });
+  const mode = sweepMode(spec);
 
   // Task 8 — RESUME THE SAME JOB. A resumable halt leaves the prior run's jobId in the
   // checkpoint; hand it to the app so it reopens THAT job instead of minting a new one
@@ -107,21 +113,80 @@ export async function runBulkSweep(spec, {
   // clean AND was at least as RICH as this one — `sweepMode` records which pass ran, because
   // a cover-only sweep leaves every note's `<note_id>` known and would otherwise skip every
   // note-open of the first expansion sweep. See `armsNotePreCheck`.
+  //
+  // A RESUME arms it too, and until changelog 509 it did not — `prior` truthy made
+  // `freshStart` false, the clean marker was never read, and the pre-check was off on the
+  // one run that most needs it: a resumed sweep re-walks the board from the top, so it
+  // meets every note the halted run already expanded before it reaches anything new. A
+  // live resume logged "prior sweep was absent" and re-opened 34 notes to ingest nothing,
+  // at ~3s of paced, signed, risk-controlled request each.
+  //
+  // What a resume may NOT trust is the index at the halt boundary. `knownNoteIndex` reads
+  // one landed child as a done note, so a note that landed 3 of its 9 images looks
+  // complete — and on a resume that is exactly what the note at the watermark may be. So
+  // the index is consulted only up to the note that owns the last COMMITTED item and
+  // disarmed from that note onward (`resumeFrom`). Everything at or after the boundary is
+  // re-opened, which also covers the engine's out-of-order tail: items beyond the
+  // watermark can have finished and registered their notes in the app's known-set while
+  // being incomplete, and they all lie after the boundary.
+  //
+  // IN FRONT of the boundary there is one other note that owes something: the one whose
+  // 9th image FAILED while its other 8 landed. It is in the app's known-set, the index
+  // calls it done, and it sits in territory the halted run genuinely finished — so the
+  // boundary does not cover it, and a fresh sweep's `clean` gate does not either, because
+  // the resume that skipped it fails nothing OF ITS OWN and closes `clean: true`. The
+  // stray failure would be laundered into the marker the next fresh sweep arms off, and
+  // the image lost for good. So the checkpoint's failed-item set names those notes and
+  // they are re-opened whatever the index says — at which point the failed item is
+  // re-attempted and either lands or fails again, and a run that fails it again records
+  // that failure itself and writes `clean: false`. The laundering closes without the
+  // clean-marker rule changing at all.
   if (expansion) {
-    const armed = priorClean && armsNotePreCheck(lastClean, sweepMode(spec));
-    expansion.arm({ knownSet, armed });
+    // The checkpoint carries the same `mode` the clean marker does, so the coverage rule is
+    // ONE rule, asked of whichever record speaks for the run before this one — and a
+    // checkpoint from a build that predates the field reads UNKNOWN and arms nothing,
+    // exactly as an older clean marker does. `clean` has no counterpart on a checkpoint and
+    // needs none: a halt is the unclean case, and the boundary is what contains it.
+    // A checkpoint that hit the failed-id cap says its list is INCOMPLETE, and an
+    // incomplete list is worth nothing here: the one id it dropped is the note that would
+    // be skipped still owing an image. So it disarms the whole pre-check for this resume —
+    // the full re-walk is the expensive answer and the only safe one. (The cap lives in
+    // config.js with the engine that enforces it; this side only reads the verdict.)
+    const failedSetLost = !freshStart && prior.failedOverflow === true;
+    const armed = freshStart
+      ? priorClean && armsNotePreCheck(lastClean, mode)
+      : !failedSetLost && armsNotePreCheck(prior, mode);
+    expansion.arm({
+      knownSet,
+      armed,
+      resumeFrom: freshStart ? null : prior.sourceId ?? null,
+      // sourceIds → the notes that own them, which is the unit the pre-check decides in.
+      // A checkpoint written before 509 has no `failed` at all and excludes nothing, which
+      // is what this run did before there was a set to read.
+      excluded: freshStart ? null : (prior.failed || []).map(noteOfSourceId).filter(Boolean),
+    });
     if (!armed) {
-      log("note-level pre-check disarmed — prior sweep was",
-        lastClean ? `${lastClean.mode || "an older build"} / clean=${lastClean.clean}` : "absent");
+      log("note-level pre-check disarmed —", freshStart
+        ? `prior sweep was ${lastClean
+          ? `${lastClean.mode || "an older build"} / clean=${lastClean.clean}` : "absent"}`
+        : failedSetLost
+          ? "this resume's checkpoint could not name everything that failed"
+          : `this resume's checkpoint was written by ${prior.mode || "an older build"}`);
     }
   }
 
   // Stamp the (possibly reopened) jobId into every checkpoint the engine writes, so a
   // later resume can reopen this same job. The engine stays jobId-agnostic — it just
-  // persists { cursor, counts } and this wrapper folds in the id.
+  // persists { cursor, sourceId, counts } and this wrapper folds in the id.
+  //
+  // The MODE rides along for the same reason it rides on the clean marker: the run that
+  // reads this checkpoint back has to know which PASS wrote it before it may trust
+  // anything the walk already covered. A cover-only sweep's checkpoint must no more arm an
+  // expansion resume's note pre-check than a cover-only clean marker may arm a fresh one's
+  // — the mode trap is the same trap on either record.
   const checkpointStorage = storage ? {
     load: (key) => storage.load(key),
-    save: (key, value) => storage.save(key, { ...value, jobId }),
+    save: (key, value) => storage.save(key, { ...value, jobId, mode }),
     remove: (key) => storage.remove(key),
   } : storage;
 
@@ -174,10 +239,73 @@ export async function runBulkSweep(spec, {
     return classifyIngestResult(result);
   };
 
-  const result = await runSweep(driver, input, {
-    relay, knownSet, storage: checkpointStorage, checkpointKey,
-    config: engineConfig, onProgress, sleep, random, log,
-  });
+  // THE HEARTBEAT (changelog 507). The app pauses any `open` job whose `updated_at` is
+  // older than its 90s `staleSweepSeconds`, and the only thing that bumped `updated_at`
+  // was an item being RELAYED. A live sweep is silent for far longer than that: a dedup
+  // skip takes no relay and no pacing at all, and rednote's note-open pass spends
+  // `NOTE_OPEN_PACING_MS` + jitter per note (plus up to `NOTE_OPEN_TIMEOUT_MS` waiting)
+  // relaying nothing whenever the notes hold only already-known items. So the app paused
+  // jobs underneath running sweeps and the next relay came back `jobStatus: "paused"`,
+  // which the engine reads as a halt — a 116-note re-sweep stopped after 2 items, the
+  // two workers in flight, with no error to explain itself.
+  //
+  // On a TIMER, not per item, because those stretches include periods with no items at
+  // all (a scroll, a feed reset) — a per-item hook would be silent through exactly the
+  // gaps that need covering.
+  let latestCounts = null;
+  const trackProgress = (counts) => {
+    latestCounts = counts;
+    if (onProgress) onProgress(counts);
+  };
+
+  // One ping. It carries `counts.skipped` because that is the one progress number the
+  // app cannot work out for itself — a dedup skip never reaches `/ingest`, so it leaves
+  // no `job_item` to count, and the Sweeps tab showed 0 skipped for all 82 of them.
+  //
+  // It NEVER throws into the sweep: a failed heartbeat logs and the sweep carries on, the
+  // same posture as the engine's checkpoint save and the checkpoint cleanup below. The
+  // worst case of a lost ping is the bug this fixes — the job goes stale and the app
+  // pauses it — so letting one take the whole sweep down would be strictly worse.
+  //
+  // It also fires unconditionally rather than skipping when nothing has changed since the
+  // last one. That test needs a clock injected beside the timer and would save one POST to
+  // loopback per 30 seconds; the case it suppresses (counts unchanged, a relay just landed)
+  // is precisely the case where `updated_at` is already fresh and the ping costs nothing to
+  // lose. Being boringly regular is the whole value here; frugality has nothing to win.
+  const ping = async () => {
+    try {
+      await transport({
+        type: BULK.progress, jobId, skipped: latestCounts ? latestCounts.skipped : 0,
+      });
+    } catch (error) {
+      log("progress ping failed (non-fatal — the app may pause this job as stale):", String(error));
+    }
+  };
+
+  // `beating` as well as `clearTimer`, because a callback can already be queued when the
+  // timer is cleared; without it a ping could land after the sweep closed the job.
+  let beating = true;
+  const heartbeat = setTimer(() => (beating ? ping() : undefined), SWEEP_HEARTBEAT_MS);
+
+  let result;
+  try {
+    result = await runSweep(driver, input, {
+      relay, knownSet, storage: checkpointStorage, checkpointKey,
+      config: engineConfig, onProgress: trackProgress, sleep, random, log,
+    });
+  } finally {
+    // In a `finally` so a halt, a throw out of the engine and a clean close all stop it.
+    // An interval nobody cancels outlives the sweep and pings a job that has been closed.
+    beating = false;
+    clearTimer(heartbeat);
+  }
+
+  // One LAST ping before the close, so the final skipped count is the one the app keeps.
+  // Without it a sweep shorter than `SWEEP_HEARTBEAT_MS` — or one whose last skips landed
+  // after its final tick — closes with a count the ledger never heard, and the row the
+  // user is left looking at still reads 0 skipped. Awaited (it is a loopback POST) and
+  // as un-throwable as every other ping.
+  await ping();
 
   // Map the engine's terminal state to the ledger close status (7A). A clean finish
   // completes. A halt is RESUMABLE (→ paused) — a user Pause or a wall/unreachable
@@ -221,7 +349,7 @@ export async function runBulkSweep(spec, {
       // pre-check off the former skips every note-open there is. A marker from an older
       // build has no `mode` at all; that reads as UNKNOWN and arms nothing, while leaving
       // the `clean` rule Instagram's early-stop uses exactly as it was.
-      await storage.save(cleanMarkerKey, { clean, mode: sweepMode(spec) });
+      await storage.save(cleanMarkerKey, { clean, mode });
     } catch (error) {
       log("clean-marker write failed (non-fatal — next sweep just full-walks):", String(error));
     }
