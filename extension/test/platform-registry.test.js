@@ -26,13 +26,20 @@ import { sweepLabel, expansionOption } from "../src/popup-view.js";
 
 const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
 
-/** One representative page host + media CDN host per platform. Kept HERE rather than
- * imported so the test states an independent expectation instead of echoing the code. */
+/** One representative page host + media CDN host per platform, plus one real page URL that
+ * MUST start a sweep (Pinterest additionally needs the board's "Collage" href, which the
+ * popup reads from the DOM). Kept HERE rather than imported so the test states an
+ * independent expectation instead of echoing the code. */
 const PLATFORMS = {
-  twitter:   { page: "x.com",              media: "https://pbs.twimg.com/media/a.jpg",     drift: "x" },
-  pinterest: { page: "www.pinterest.com",  media: "https://i.pinimg.com/originals/a.jpg",  drift: "pinterest-board" },
-  instagram: { page: "www.instagram.com",  media: "https://scontent.cdninstagram.com/a.jpg", drift: "instagram" },
-  rednote:   { page: "www.rednote.com",    media: "http://sns-i27.rednotecdn.com/key",     drift: "rednote" },
+  twitter:   { page: "x.com",              media: "https://pbs.twimg.com/media/a.jpg",     drift: "x",
+               sweep: { url: "https://x.com/i/bookmarks" } },
+  pinterest: { page: "www.pinterest.com",  media: "https://i.pinimg.com/originals/a.jpg",  drift: "pinterest-board",
+               sweep: { url: "https://www.pinterest.com/sujen/design-refs/",
+                        collageHref: "/collage-creation-tool/?boardId=1084663960195879466" } },
+  instagram: { page: "www.instagram.com",  media: "https://scontent.cdninstagram.com/a.jpg", drift: "instagram",
+               sweep: { url: "https://www.instagram.com/lychee.web/saved/" } },
+  rednote:   { page: "www.rednote.com",    media: "http://sns-i27.rednotecdn.com/key",     drift: "rednote",
+               sweep: { url: "https://www.rednote.com/board/69322476000000001202811f?source=web_user_page" } },
 };
 
 /** Does any manifest content_scripts entry running `file` cover `host`? */
@@ -59,6 +66,19 @@ for (const [platform, fixture] of Object.entries(PLATFORMS)) {
   test(`${platform}: registered in every place a sweep needs it`, () => {
     assert.ok(SUPPORTED_PLATFORMS.has(platform), "bulk-controller DRIVER_BUILDERS");
     assert.equal(platformForHost(fixture.page), platform, "bulk-context platformForHost");
+    // Recognising the HOST is half the resolver's job; the other half is accepting a PAGE,
+    // and it fails just as silently — the popup renders its guidance string on the very
+    // board it was written for and no sweep can start. "Every refusal has a message" below
+    // does not cover it: a platform that refuses EVERYTHING passes that test perfectly. So
+    // each platform names one real page that must resolve.
+    assert.equal(new URL(fixture.sweep.url).hostname, fixture.page,
+      "the sweep URL must be on the host registered above");
+    const resolved = resolveSweepSpec(fixture.sweep);
+    assert.equal(resolved.ok, true,
+      `bulk-context resolveSweepSpec refused ${fixture.sweep.url} (${resolved.reason})`);
+    assert.equal(resolved.spec.platform, platform, "the spec must name this platform");
+    assert.ok(resolved.spec.scope && resolved.spec.scope.length > 0,
+      "a spec with no scope cannot checkpoint or resume");
     assert.equal(isAllowedMediaHost(platform, fixture.media), true, "media-hosts ALLOWED");
     assert.ok(CHECKS[fixture.drift], `drift.CHECKS.${fixture.drift}`);
     assert.ok(
