@@ -478,6 +478,34 @@ test("rednote FROM A BOARD: right-clicked note link + image → note URL + that 
   assert.deepEqual(p.rawMetadata, { noteId: "6650a1b2c3d4e5f600000003" });
 });
 
+test("rednote: a board card's own link — /board/{board}/{note} — is a note URL too", () => {
+  // The third note route, probed live 2026-09-14: a board card links to
+  // `/board/<board_id>/<note_id>`, not to `/explore/<id>`. The sweep's page driver clicks
+  // exactly this href, so the extractor must read the same URL as a note or a single
+  // capture from a board yields no `noteId` while the sweep of the same board does.
+  const h = harvest({
+    url: "https://www.rednote.com/board/69322476000000001202811f",
+    media: [img("https://sns-web-i10.rednotecdn.com/202609131332/43d5d4fbe9c41cf7739cdb99c9da6a47/keyC!nc_n_webp_mw_1", 900, 1200)],
+  });
+  const context = {
+    linkUrl: "https://www.rednote.com/board/69322476000000001202811f/6a9f696e000000000d020daa?xsec_token=AB40jTqIOcxMe4J14aCe6fUNDD35OS0cACcj06BBg-Y1w=&xsec_source=",
+  };
+  const p = extractProvenance(h, context);
+  assert.deepEqual(p.rawMetadata, { noteId: "6a9f696e000000000d020daa" });
+  // The token is a short-lived credential and `cleanURL` strips it, exactly as it does on
+  // the `/explore/` form above. The empty `xsec_source` goes with it.
+  assert.equal(p.originalURL,
+    "https://www.rednote.com/board/69322476000000001202811f/6a9f696e000000000d020daa");
+});
+
+test("rednote: a board sub-route whose tail is not a note id is NOT a note", () => {
+  // `/explore/<x>` has nothing but notes under it; `/board/<id>/…` shares its namespace
+  // with the board page, so the tail has to look like a note id or the board's own
+  // sub-routes would read as notes.
+  const h = harvest({ url: "https://www.rednote.com/board/69322476000000001202811f/edit" });
+  assert.deepEqual(rednote.extract(h).rawMetadata, {});
+});
+
 test("rednote: a board page with no note link keeps the board URL and no noteId", () => {
   const h = harvest({
     url: "https://www.xiaohongshu.com/board/6650000000000000000000ff",

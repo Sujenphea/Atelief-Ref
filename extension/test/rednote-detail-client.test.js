@@ -685,14 +685,42 @@ test("an item with no note id keeps itself rather than being dropped", async () 
 
 // MARK: - the live page driver (browser glue)
 
-/** A fake board page: one anchor per note id, recording clicks and scrolls. */
+/**
+ * A fake board page. `links` is the page's anchors IN DOCUMENT ORDER, and the document
+ * answers `querySelectorAll` in that order — which is the whole point here: the live board
+ * renders two anchors per note and the useless one is first.
+ *
+ * `state.selectors` records every selector string the document was asked for, so a test can
+ * assert what was interpolated into one rather than only what came back out.
+ */
 function fakeWindow({ links = [], pathname = "/board/abc" } = {}) {
-  const state = { clicks: [], scrolled: [], back: 0, scrolledIntoView: [] };
+  const state = { clicks: [], scrolled: [], back: 0, scrolledIntoView: [], selectors: [] };
   const nodes = links.map((href) => ({
-    getAttribute: () => href,
+    getAttribute: (name) => (name === "href" ? href : null),
     click: () => state.clicks.push(href),
     scrollIntoView: () => state.scrolledIntoView.push(href),
   }));
+  /**
+   * Enough of a selector engine to make an injection REACHABLE, which a regex that simply
+   * declines to parse anything unexpected is not — a fake that returns `[]` for a malformed
+   * selector passes every guard test with the guard deleted.
+   *
+   * So this models the three behaviours that decide whether a breakout bites: a comma makes
+   * a selector LIST and the terms are unioned in document order; `[href*=""]` matches
+   * nothing (an empty substring never matches, per CSS); and a selector that will not parse
+   * throws the way `querySelectorAll` throws `SyntaxError`, rather than quietly matching
+   * nothing.
+   */
+  const matching = (selector) => {
+    state.selectors.push(selector);
+    const terms = selector.split(",").map((term) => {
+      const parsed = /^\s*a\[href\*="([^"]*)"\]\s*$/.exec(term);
+      if (!parsed) throw new Error(`SyntaxError: '${selector}' is not a valid selector`);
+      return parsed[1];
+    });
+    return nodes.filter((_, index) =>
+      terms.some((needle) => needle !== "" && links[index].includes(needle)));
+  };
   return {
     state,
     win: {
@@ -702,17 +730,46 @@ function fakeWindow({ links = [], pathname = "/board/abc" } = {}) {
       location: { pathname },
       KeyboardEvent: function KeyboardEvent(type, init) { this.type = type; Object.assign(this, init); },
       document: {
-        querySelector: (selector) => {
-          const match = /a\[href\*="([^"]+)"\]/.exec(selector);
-          if (!match) return null;
-          const index = links.findIndex((href) => href.includes(match[1]));
-          return index === -1 ? null : nodes[index];
-        },
+        querySelectorAll: (selector) => matching(selector),
+        querySelector: (selector) => matching(selector)[0] || null,
         dispatchEvent: (event) => { state.event = event; return true; },
       },
     },
   };
 }
+
+/**
+ * The live board's own anchors for ONE note, in the order the page emits them — probed in
+ * the console on 2026-09-14 against `https://www.rednote.com/board/69322476000000001202811f`
+ * and copied verbatim, query strings included.
+ *
+ * Two things in here are the bug rather than decoration. The tokenless anchor is FIRST, so
+ * document order picks the one rednote answers 404 for. And `xsec_source` is present but
+ * EMPTY, so any test of "is this URL usable" that reaches for the source rather than the
+ * token would reject the only anchor that works.
+ */
+const LIVE_BOARD_ID = "69322476000000001202811f";
+const LIVE_NOTE_ID = "6a9f696e000000000d020daa";
+const LIVE_TOKEN = "AB40jTqIOcxMe4J14aCe6fUNDD35OS0cACcj06BBg-Y1w=";
+const LIVE_NOTE_HREF = `/board/${LIVE_BOARD_ID}/${LIVE_NOTE_ID}`;
+const LIVE_TOKENISED_HREF = `${LIVE_NOTE_HREF}?xsec_token=${LIVE_TOKEN}&xsec_source=`;
+const LIVE_ANCHORS = [
+  "/user/profile/65d3e54f000000000503359d",
+  "/user/profile/65d3e54f000000000503359d?tab=fav&subTab=board",
+  LIVE_NOTE_HREF,
+  LIVE_TOKENISED_HREF,
+];
+
+/** An item shaped like the cover pass's, for the driver to open. */
+const noteItem = (noteId, overrides = {}) => ({
+  sourceId: noteId, provenance: { rawMetadata: { noteId } }, ...overrides,
+});
+
+/** The `xsec_token` an href carries, or null — the property every open depends on. */
+const tokenIn = (href) => {
+  const match = /[?&]xsec_token=([^&#]*)/.exec(href || "");
+  return match && match[1] ? match[1] : null;
+};
 
 test("the page driver clicks the note's own card — it never navigates", async () => {
   // Assigning `location` would tear down the content script, the engine and the sweep with
@@ -726,6 +783,109 @@ test("the page driver clicks the note's own card — it never navigates", async 
   assert.deepEqual(state.clicks, ["/explore/NOTE-2"]);
 });
 
+test("the board's TOKENLESS anchor comes first and must not win — the live 404, pinned", async () => {
+  // The bug, exactly as the live board renders it. rednote answers 404 for a note URL with
+  // no `xsec_token`, the board emits a tokenless anchor and a tokenised one for the same
+  // note, and the tokenless one is FIRST in document order — so `querySelector` on the id
+  // alone opened a 404 page for every note on the board.
+  const { win, state } = fakeWindow({ links: LIVE_ANCHORS, pathname: `/board/${LIVE_BOARD_ID}` });
+  const driver = createPageNoteDriver({ win, sleep: async () => {} });
+
+  const opened = await driver.openNote(noteItem(LIVE_NOTE_ID, { xsecToken: LIVE_TOKEN }));
+
+  assert.equal(opened, true);
+  assert.equal(state.clicks.length, 1);
+  // The property, not the literal: whatever was clicked carries a usable token.
+  assert.equal(tokenIn(state.clicks[0]), LIVE_TOKEN, "the note was opened without its token");
+  assert.equal(state.clicks[0], LIVE_TOKENISED_HREF);
+  assert.equal(state.clicks.includes(LIVE_NOTE_HREF), false, "document order won over the token");
+});
+
+test("an empty xsec_source does not disqualify the anchor that carries the token", async () => {
+  // The live href ends `&xsec_source=` — empty. `xsec_source` says where the reader came
+  // from (empty from a board card, `pc_user` from a hand-opened note) and varies; only the
+  // token decides whether the URL opens. A usability test that reached for the source would
+  // reject the one anchor that works and fall back to the 404.
+  const { win, state } = fakeWindow({ links: LIVE_ANCHORS });
+  const driver = createPageNoteDriver({ win, sleep: async () => {} });
+
+  await driver.openNote(noteItem(LIVE_NOTE_ID));
+
+  assert.ok(state.clicks[0].includes("xsec_source="));
+  assert.equal(tokenIn(state.clicks[0]), LIVE_TOKEN);
+});
+
+test("all THREE note routes are opened through their tokenised anchor — the id is the match", async () => {
+  // A note is reachable at `/explore/<id>`, at `/discovery/item/<id>` (observed live, with
+  // `xsec_source=pc_user`) and at `/board/<board>/<id>` (what the board card renders). The
+  // driver matches the id ANYWHERE in the href on purpose: narrowing to a route would fail
+  // silently the day the SPA picks a different one. Each shape is paired with its tokenless
+  // twin, first, so the token — not the route and not the order — is what is being asserted.
+  const routes = [
+    `/explore/${LIVE_NOTE_ID}`,
+    `/discovery/item/${LIVE_NOTE_ID}`,
+    `/board/${LIVE_BOARD_ID}/${LIVE_NOTE_ID}`,
+  ];
+  for (const [index, route] of routes.entries()) {
+    const source = index === 1 ? "pc_user" : "";
+    const tokenised = `${route}?xsec_token=${LIVE_TOKEN}&xsec_source=${source}`;
+    const { win, state } = fakeWindow({ links: [route, tokenised] });
+    const driver = createPageNoteDriver({ win, sleep: async () => {} });
+
+    assert.equal(await driver.openNote(noteItem(LIVE_NOTE_ID)), true, route);
+    assert.deepEqual(state.clicks, [tokenised], route);
+  }
+});
+
+test("a tokenised anchor wins wherever it sits, and an EMPTY token is not a token", async () => {
+  // `xsec_token=` with nothing after it is the tokenless case wearing the parameter's name.
+  const { win, state } = fakeWindow({
+    links: [
+      `/board/${LIVE_BOARD_ID}/${LIVE_NOTE_ID}?xsec_token=&xsec_source=`,
+      `/explore/${LIVE_NOTE_ID}`,
+      `/explore/${LIVE_NOTE_ID}?xsec_token=${LIVE_TOKEN}`,
+    ],
+  });
+  const driver = createPageNoteDriver({ win, sleep: async () => {} });
+
+  await driver.openNote(noteItem(LIVE_NOTE_ID));
+
+  assert.equal(tokenIn(state.clicks[0]), LIVE_TOKEN);
+});
+
+test("a note whose ONLY anchor is tokenless is still opened — and the shape change is logged", async () => {
+  // Refusing here would report `no_note_card` for a card that is plainly on the page, and
+  // would lose every note the day rednote stops rendering the tokenised anchor. A 404 that
+  // degrades (and times out into `reasons.timeout`) is the better failure, but it is not
+  // silent: the log line is the only warning a live run would get.
+  const lines = [];
+  const { win, state } = fakeWindow({ links: [`/explore/${LIVE_NOTE_ID}`] });
+  const driver = createPageNoteDriver({ win, sleep: async () => {}, log: (...args) => lines.push(args.join(" ")) });
+
+  assert.equal(await driver.openNote(noteItem(LIVE_NOTE_ID)), true);
+  assert.deepEqual(state.clicks, [`/explore/${LIVE_NOTE_ID}`]);
+  assert.equal(lines.some((line) => line.includes("xsec_token")), true,
+    "a tokenless open passed without a word");
+});
+
+test("the item's xsec_token is NEVER interpolated into a selector — only the guarded id is", async () => {
+  // A token contains `=` and `-`, comes off a page response, and would break out of an
+  // attribute selector if it were ever spliced into one. The filtering is done in JS for
+  // that reason, so the only thing the document is ever asked for is the id — which the
+  // guard above has already cleared.
+  const hostile = 'x"] , a[href*="';
+  const { win, state } = fakeWindow({ links: [`/explore/${LIVE_NOTE_ID}?xsec_token=${LIVE_TOKEN}`] });
+  const driver = createPageNoteDriver({ win, sleep: async () => {} });
+
+  await driver.openNote(noteItem(LIVE_NOTE_ID, { xsecToken: hostile }));
+
+  assert.deepEqual(state.selectors, [`a[href*="${LIVE_NOTE_ID}"]`]);
+  for (const selector of state.selectors) {
+    assert.equal(selector.includes(hostile), false);
+    assert.equal(selector.includes("xsec_token"), false);
+  }
+});
+
 test("the page driver reports FALSE when the note's card is not on the page", async () => {
   const { win, state } = fakeWindow({ links: ["/explore/NOTE-1"] });
   const driver = createPageNoteDriver({ win, sleep: async () => {} });
@@ -735,11 +895,21 @@ test("the page driver reports FALSE when the note's card is not on the page", as
 });
 
 test("the page driver refuses an id that is not id-shaped rather than building a selector from it", async () => {
-  const { win, state } = fakeWindow({ links: ['/explore/x"] , a['] });
+  // The dangerous breakout is not a selector that fails to parse — `querySelectorAll` throws
+  // on those and the driver already catches it. It is a VALID one: an id that closes the
+  // attribute and opens a second term steers the click at an anchor of the attacker's
+  // choosing, and clicking a profile link is a real navigation off the board, which is the
+  // one thing this whole driver exists not to do.
+  const { win, state } = fakeWindow({
+    links: ["/user/profile/65d3e54f000000000503359d", `/explore/${LIVE_NOTE_ID}`],
+  });
   const driver = createPageNoteDriver({ win, sleep: async () => {} });
 
-  assert.equal(await driver.openNote({ sourceId: '"] , a[href*="', provenance: { rawMetadata: {} } }), false);
+  for (const hostile of ['"] , a[href*="', 'x"], a[href*="/user/profile', '"]']) {
+    assert.equal(await driver.openNote(noteItem(hostile)), false, hostile);
+  }
   assert.deepEqual(state.clicks, []);
+  assert.deepEqual(state.selectors, [], "a non-id never reached the document at all");
 });
 
 test("closing restores the board's scroll position so the sweep keeps paging from where it was", async () => {
@@ -768,9 +938,35 @@ test("closing falls back to history.back() when the SPA ROUTED to the note inste
   assert.deepEqual(state.scrolled, [0], "and the board scroll is still restored afterwards");
 });
 
+test("the routed-note close covers every note route, and the BOARD page is not one", async () => {
+  // The history fallback fires only when the SPA navigated instead of overlaying, and it
+  // used to ask `/explore/` alone — which the live board never matches, because a board
+  // card routes to `/board/<board_id>/<note_id>`. Asserted through the same
+  // `rednoteNoteId` the extractor uses, so the two cannot drift apart again.
+  const routed = [
+    `/explore/${LIVE_NOTE_ID}`,
+    `/discovery/item/${LIVE_NOTE_ID}`,
+    `/board/${LIVE_BOARD_ID}/${LIVE_NOTE_ID}`,
+  ];
+  for (const pathname of routed) {
+    const { win, state } = fakeWindow({ links: [], pathname });
+    await createPageNoteDriver({ win, sleep: async () => {} }).closeNote();
+    assert.equal(state.back, 1, pathname);
+    assert.deepEqual(state.scrolled, [0], `${pathname}: the board scroll is restored either way`);
+  }
+
+  // The board itself, and a board sub-route whose tail is not a note id: nothing to pop,
+  // and popping would take the sweep off the board it is halfway through.
+  for (const pathname of [`/board/${LIVE_BOARD_ID}`, `/board/${LIVE_BOARD_ID}/edit`]) {
+    const { win, state } = fakeWindow({ links: [], pathname });
+    await createPageNoteDriver({ win, sleep: async () => {} }).closeNote();
+    assert.equal(state.back, 0, pathname);
+  }
+});
+
 test("the page driver never throws into the sweep, whatever the page does", async () => {
   const win = {
-    document: { querySelector: () => { throw new Error("detached document"); } },
+    document: { querySelectorAll: () => { throw new Error("detached document"); } },
     location: { pathname: "/board/abc" },
   };
   const driver = createPageNoteDriver({ win, sleep: async () => {} });

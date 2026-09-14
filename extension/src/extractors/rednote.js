@@ -107,6 +107,46 @@ export function toRednoteOriginal(src) {
   }
 }
 
+/** A note id, as every rednote route spells it: 24 hex in every capture, bounded the way
+ * `bulk-context.js` bounds a board id. Used ONLY where a route's namespace is shared (see
+ * `rednoteNoteId`), never as a general id test. */
+const NOTE_ID_SHAPE = /^[0-9a-f]{16,32}$/i;
+
+/**
+ * The note id in a rednote note URL — a full URL, or a bare `location.pathname` — or null.
+ *
+ * THREE routes carry a note, and this is the one place that knows all three, because a
+ * second copy is how the extractor and the sweep's page driver come to disagree about what
+ * a note URL is:
+ *
+ *   · `/explore/<note_id>`              — a note opened from a feed.
+ *   · `/discovery/item/<note_id>`       — a note opened from a profile or a search result
+ *                                         (observed live 2026-09-14, carrying
+ *                                         `xsec_source=pc_user`).
+ *   · `/board/<board_id>/<note_id>`     — what a BOARD CARD renders, and what the board
+ *                                         routes to. Probed live 2026-09-14 on
+ *                                         `/board/69322476000000001202811f`.
+ *
+ * The third is the one that needs a shape test on its id, and the reason is asymmetry of
+ * namespace: nothing but a note lives under `/explore/`, while `/board/<id>/…` shares its
+ * namespace with the board page itself, so a future `/board/<id>/edit` must not read as a
+ * note. Two segments (`/board/<board_id>`) is the board and is not a note — the extractor
+ * has always relied on that.
+ *
+ * The query string is deliberately NOT part of the test. `xsec_token` is a short-lived
+ * credential that `cleanURL` strips before anything is stored, and `xsec_source` varies by
+ * where the reader came from (`` empty on a board card, `pc_user` on a hand-opened note),
+ * so neither can be a precondition for recognising the route.
+ */
+export function rednoteNoteId(url) {
+  const segments = /^[a-z][a-z0-9+.-]*:\/\//i.test(url || "")
+    ? pathSegments(url) : splitPathname(url);
+  if (segments[0] === "explore") return segments[1] || null;
+  if (segments[0] === "discovery" && segments[1] === "item") return segments[2] || null;
+  if (segments[0] === "board" && NOTE_ID_SHAPE.test(segments[2] || "")) return segments[2];
+  return null;
+}
+
 export const rednote = {
   platform: "rednote",
 
@@ -118,21 +158,12 @@ export const rednote = {
   },
 
   extract(harvest, context = {}) {
-    // A note lives at `/explore/{id}`, and — from a profile or a search result —
-    // at `/discovery/item/{id}`. Both carry the same note id.
-    const isNote = (u) => {
-      const segments = pathSegments(u);
-      return (segments[0] === "explore" && !!segments[1]) ||
-        (segments[0] === "discovery" && segments[1] === "item" && !!segments[2]);
-    };
+    // What a note URL is lives in `rednoteNoteId` — all three routes, one definition,
+    // shared with the sweep's page driver.
     const url =
-      firstPostURL([context.linkUrl, harvest.url, harvest.canonical], isNote) ||
+      firstPostURL([context.linkUrl, harvest.url, harvest.canonical], (u) => !!rednoteNoteId(u)) ||
       liveURL(harvest);
-    const segments = pathSegments(url);
-    const noteId =
-      segments[0] === "explore" ? segments[1] || null :
-      segments[0] === "discovery" && segments[1] === "item" ? segments[2] || null :
-      null;
+    const noteId = rednoteNoteId(url);
 
     // Exact clicked image, else the biggest rednote CDN image on the note page.
     const clicked = CDN.test(context.srcUrl || "") ? context.srcUrl : null;

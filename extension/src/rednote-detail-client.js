@@ -35,6 +35,7 @@
 // implementation of those two and is the only part that needs a real page.
 
 import { parseNoteDetail } from "./bulk-rednote.js";
+import { rednoteNoteId } from "./extractors/rednote.js";
 import { STREAM_REFUSAL } from "./rednote-video.js";
 import {
   NOTE_OPEN_BUDGET, NOTE_OPEN_PACING_MS, NOTE_OPEN_PACING_JITTER_MS,
@@ -385,10 +386,22 @@ export const isRednoteChallenge = (error) => !!(error && error.challenge === tru
  * scrolling and a note-open that left the viewport somewhere else would page from there.
  *
  * Everything is guarded and best-effort: a failure to open or close is a degradation the
- * expander counts, never a throw into the sweep. UNVERIFIED against a live board — the
- * card's link shape and the overlay's close affordance are the two things here that a
- * capture could not answer — which is why the whole feature is opt-in and degrades to the
- * cover pass this file cannot break.
+ * expander counts, never a throw into the sweep — which is why the whole feature is opt-in
+ * and degrades to the cover pass this file cannot break.
+ *
+ * THE CARD'S LINK SHAPE IS NO LONGER A GUESS. A live board
+ * (`/board/69322476000000001202811f`) was probed in the console on 2026-09-14 and every
+ * anchor dumped in document order:
+ *
+ *     /board/<board_id>/<note_id>                                  <- NO token
+ *     /board/<board_id>/<note_id>?xsec_token=AB40…Y1w=&xsec_source=
+ *
+ * The board renders TWO anchors per note and the TOKENLESS ONE COMES FIRST, so a
+ * `querySelector` that asks only for the id picks it — and rednote answers 404 for a note
+ * URL with no `xsec_token`. That was not a theory: it was the 404 the user watched the
+ * sweep open. Hence `findLink` below chooses on the TOKEN, not on document order.
+ *
+ * The overlay's close affordance is still the one thing here a capture cannot answer.
  */
 export function createPageNoteDriver({
   win,
@@ -398,15 +411,55 @@ export function createPageNoteDriver({
 } = {}) {
   let restoreScroll = 0;
 
-  /** The card link for a note. Matched on the id ANYWHERE in the href rather than on a
-   * route shape: a board card has linked to `/explore/<id>` and to `/board/<board>/<id>`
-   * in different builds, and the id is the part that identifies the note either way.
-   * Guarded to hex-ish ids so nothing can smuggle a selector through an attribute. */
+  /** A note URL that will actually open: `xsec_token=` with SOMETHING after it. Only the
+   * token is tested. `xsec_source` sits beside it and varies by where the reader came from
+   * — EMPTY on the board card probed above, `pc_user` on a note the user opened by hand —
+   * so requiring it would reject the very anchor this function exists to find. */
+  const TOKENISED = /[?&]xsec_token=[^&#]/;
+
+  /** An anchor's href as written, falling back to the resolved `.href` property. Guarded:
+   * a detached or exotic node must degrade to "not tokenised", never throw. */
+  const hrefOf = (node) => {
+    try {
+      const attr = node && typeof node.getAttribute === "function" ? node.getAttribute("href") : null;
+      return String(attr || (node && node.href) || "");
+    } catch {
+      return "";
+    }
+  };
+
+  /**
+   * The card link for a note — the TOKENISED one when the page renders one.
+   *
+   * Matched on the id ANYWHERE in the href rather than on a route shape, deliberately and
+   * still: a note is reachable at `/explore/<id>`, at `/discovery/item/<id>` and at
+   * `/board/<board>/<id>` (all three observed live), and the id is the part that identifies
+   * it in every one of them. Narrowing to a route would trade one silent failure for
+   * another the day the SPA picks a different one.
+   *
+   * What is NOT incidental is WHICH of the matching anchors is clicked. The board emits a
+   * tokenless anchor and a tokenised anchor for the same note, tokenless first, and a note
+   * URL without `xsec_token` 404s — so the choice is made on the token and document order
+   * is only the tie-break among tokenised ones. A tokenless anchor is still clicked when it
+   * is the ONLY one, because a 404 that degrades is strictly better than refusing a note
+   * whose card is plainly there; it is logged, because it is a shape change worth seeing.
+   *
+   * ONLY the note id is ever interpolated into the selector, and only after the id guard —
+   * so nothing can smuggle a selector through an attribute. The token is never interpolated
+   * at all: it contains `=` and `-` and (being page-supplied) could contain a quote, and
+   * the filtering is done in JS where it cannot break out of anything.
+   */
   const findLink = (noteId) => {
     if (!/^[A-Za-z0-9_-]{4,64}$/.test(noteId)) return null;
     const doc = win && win.document;
-    if (!doc || typeof doc.querySelector !== "function") return null;
-    return doc.querySelector(`a[href*="${noteId}"]`);
+    if (!doc || typeof doc.querySelectorAll !== "function") return null;
+    const nodes = Array.from(doc.querySelectorAll(`a[href*="${noteId}"]`) || []);
+    const tokenised = nodes.find((node) => TOKENISED.test(hrefOf(node)));
+    if (tokenised) return tokenised;
+    if (nodes.length > 0) {
+      log("rednote: no anchor for", noteId, "carries an xsec_token — the open may 404");
+    }
+    return nodes[0] || null;
   };
 
   return {
@@ -446,9 +499,12 @@ export function createPageNoteDriver({
       }
       await sleep(settleMs);
       try {
-        // Still on the note's own route → the SPA navigated rather than overlaying, so the
-        // history entry the click pushed is what has to come off.
-        if (win.location && /\/explore\//.test(win.location.pathname || "") &&
+        // Still on a note's own route → the SPA navigated rather than overlaying, so the
+        // history entry the click pushed is what has to come off. WHICH pathnames are a
+        // note is the extractor's `rednoteNoteId`, shared rather than retyped: a private
+        // copy here spelled `/explore/` alone, and the board card routes to
+        // `/board/<board_id>/<note_id>` — so on the live board this fallback never fired.
+        if (win.location && rednoteNoteId(win.location.pathname || "") &&
             win.history && typeof win.history.back === "function") {
           win.history.back();
           await sleep(settleMs);
