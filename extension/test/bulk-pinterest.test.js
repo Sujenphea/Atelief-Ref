@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 
 import {
   mapPinterestPin, pickPinImages, pinIdFrom,
-  parseBoardFeedPage, parseBoardsPage, PinterestResourceError,
+  parseBoardFeedPage, parseBoardsPage, isBoardEntry, PinterestResourceError,
   buildBoardFeedURL, buildBoardsURL, boardFeedHeaders,
   makeResourceFetch, resourceNameFromURL,
   enumerateBoardFeed, enumerateBoards, pinterestBoardDriver,
@@ -123,6 +123,88 @@ test("parseBoardsPage: maps boards to { id, name, url }", () => {
   const { boards, bookmark } = parseBoardsPage(boardsList);
   assert.deepEqual(boards, [{ id: "1000000000000000219", name: "Sample text", url: "/sampleuser/sample/" }]);
   assert.equal(bookmark, "SAMPLE_CURSOR_TOKEN==");
+});
+
+// MARK: - a story is not a board (499)
+//
+// Pinterest interleaves non-board modules into a board resource's `data[]`. The shape
+// below is the `board_ideas_preview_detailed` placeholder a board page opens with,
+// COMPOSED (the capture that exposed this was overwritten before it could be committed),
+// and it is what a user supplied to the boards canary by accident.
+
+test("parseBoardsPage: a story container in data[] is not a board", () => {
+  const placeholder = {
+    resource_response: {
+      status: "success",
+      http_status: 200,
+      endpoint_name: "v3_board_pins",
+      data: [{ type: "story", id: "6733671870646100908", story_type: "board_ideas_preview_detailed" }],
+      bookmark: "SAMPLE_CURSOR_TOKEN==",
+    },
+  };
+  // It has an id, which is the whole reason it used to parse. What it has no way to
+  // produce is a url, and without one `buildBoardFeedURL` sends `source_url=null`.
+  const { boards } = parseBoardsPage(placeholder);
+  assert.deepEqual(boards, []);
+});
+
+test("parseBoardsPage: a declared non-board is dropped from beside real boards", () => {
+  const mixed = {
+    resource_response: {
+      status: "success",
+      http_status: 200,
+      data: [
+        { type: "board", id: "1000000000000000001", name: "Sample One", url: "/sampleuser/sample-one/" },
+        { type: "story", id: "6733671870646100908", story_type: "board_ideas_preview_detailed" },
+        { type: "board", id: "1000000000000000002", name: "Sample Two", url: "/sampleuser/sample-two/" },
+      ],
+      bookmark: null,
+    },
+  };
+  const { boards } = parseBoardsPage(mixed);
+  assert.deepEqual(boards.map((board) => board.id),
+    ["1000000000000000001", "1000000000000000002"]);
+});
+
+test("parseBoardsPage: an entry with NO type still counts as a board", () => {
+  // The fallback direction, and the one that matters if Pinterest renames `type`: an
+  // unrecognisable entry must parse, so the drift surfaces in the canary's name/url
+  // rules rather than as a boards list that silently went empty.
+  const untyped = {
+    resource_response: {
+      status: "success",
+      http_status: 200,
+      data: [{ id: "1000000000000000001", name: "Sample One", url: "/sampleuser/sample-one/" }],
+      bookmark: null,
+    },
+  };
+  assert.deepEqual(parseBoardsPage(untyped).boards,
+    [{ id: "1000000000000000001", name: "Sample One", url: "/sampleuser/sample-one/" }]);
+});
+
+test("parseBoardsPage: a board that lost its url is KEPT, not silently dropped", () => {
+  // Dropping it here would disguise a renamed `board.url` as "the account has fewer
+  // boards"; keeping it is what lets `checkBoards` name the field that moved.
+  const urlless = {
+    resource_response: {
+      status: "success",
+      http_status: 200,
+      data: [{ type: "board", id: "1000000000000000001", name: "Sample One" }],
+      bookmark: null,
+    },
+  };
+  assert.deepEqual(parseBoardsPage(urlless).boards,
+    [{ id: "1000000000000000001", name: "Sample One", url: null }]);
+});
+
+test("isBoardEntry: only a DECLARED non-board type is excluded", () => {
+  assert.equal(isBoardEntry({ type: "board", id: "1" }), true);
+  assert.equal(isBoardEntry({ id: "1" }), true, "no type ⇒ treat as a board");
+  assert.equal(isBoardEntry({ type: null, id: "1" }), true);
+  assert.equal(isBoardEntry({ type: "story", id: "1" }), false);
+  assert.equal(isBoardEntry({ type: "pin", id: "1" }), false);
+  assert.equal(isBoardEntry({ type: "user", id: "1" }), false);
+  assert.equal(isBoardEntry(null), false);
 });
 
 // MARK: - URL / header builders

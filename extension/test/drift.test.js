@@ -205,6 +205,164 @@ test("CHECKS registry wires each check to a --flag", () => {
   assert.equal(CHECKS["rednote-video"].run, checkRednoteVideo);
 });
 
+// MARK: - checkBoards: a response that is not a boards list (499)
+//
+// Both fixtures below are COMPOSED, not captured, and deliberately live inline rather
+// than in test/fixtures/ — the distinction `drift-check.js`'s FIXTURE comment draws
+// (a committed fixture answers "does a response the platform sent TODAY still parse";
+// a composed one exercises a specific rule and is asserted literally).
+//
+// The placeholder is the response a user supplied to `--pinterest-boards` by accident:
+// Pinterest sends `board_ideas_preview_detailed` when a board first opens, with
+// `endpoint_name: v3_board_pins` and a `data[]` that is one `type: "story"` container
+// and zero boards. The canary printed `✔ Pinterest boards list — boards=1`. The file
+// itself was overwritten in the gitignored `resources/` before it could be committed,
+// so this is the shape reconstructed from the verdict it produced — the id is the one
+// `parseBoardsPage` yielded from it, and everything else is minimal on purpose.
+const boardsPlaceholder = {
+  resource_response: {
+    status: "success",
+    code: 0,
+    message: "ok",
+    endpoint_name: "v3_board_pins",
+    http_status: 200,
+    data: [{ type: "story", id: "6733671870646100908", story_type: "board_ideas_preview_detailed" }],
+    bookmark: "SAMPLE_CURSOR_TOKEN==",
+  },
+};
+
+// The real thing, composed from the shape of a live `v3_user_profile_boards_feed`
+// capture: `data[]` is N `type: "board"` rows, each carrying a name and a `/user/slug/`
+// url. Four rows, because the live capture has four and a one-row list could not tell a
+// per-entry rule from a whole-page one.
+const boardsListPage = {
+  resource_response: {
+    status: "success",
+    code: 0,
+    message: "ok",
+    endpoint_name: "v3_user_profile_boards_feed",
+    http_status: 200,
+    data: [
+      { type: "board", id: "1000000000000000001", name: "Sample One", url: "/sampleuser/sample-one/" },
+      { type: "board", id: "1000000000000000002", name: "Sample Two", url: "/sampleuser/sample-two/" },
+      { type: "board", id: "1000000000000000003", name: "Sample Three", url: "/sampleuser/sample-three/" },
+      { type: "board", id: "1000000000000000004", name: "Sample Four", url: "/sampleuser/sample-four/" },
+    ],
+    bookmark: "SAMPLE_CURSOR_TOKEN==",
+  },
+};
+
+const clone = (json) => JSON.parse(JSON.stringify(json));
+
+test("checkBoards FLAGS the board_ideas_preview_detailed placeholder (the wrong response)", () => {
+  const result = checkBoards(boardsPlaceholder);
+  assert.equal(result.ok, false, "a story container is not a boards list");
+  assert.ok(result.problems.some((p) => /is this a boards list at all/.test(p)),
+    JSON.stringify(result.problems));
+  // The story is a declared non-board, so it never reaches `boards` — the count that
+  // read `boards=1` and passed now reads 0, and the module is reported beside it so the
+  // operator can see WHY rather than mistaking it for an empty account.
+  assert.equal(result.signals.boards, 0);
+  assert.equal(result.signals.entries, 1);
+  assert.equal(result.signals.modules, 1);
+});
+
+test("checkBoards passes a real-shaped boards list of named, addressable boards", () => {
+  const result = checkBoards(boardsListPage);
+  assert.equal(result.ok, true, JSON.stringify(result.problems));
+  assert.equal(result.problems.length, 0);
+  assert.equal(result.signals.entries, 4);
+  assert.equal(result.signals.modules, 0);
+  assert.equal(result.signals.boards, 4);
+  assert.equal(result.signals.named, 4);
+  assert.equal(result.signals.addressable, 4);
+});
+
+test("checkBoards flags boards that lost their url (unsweepable, buildBoardFeedURL needs it)", () => {
+  const drifted = clone(boardsListPage);
+  for (const board of drifted.resource_response.data) delete board.url;
+  const result = checkBoards(drifted);
+  assert.equal(result.ok, false);
+  assert.ok(result.problems.some((p) => /4 of 4 boards have no url/.test(p)),
+    JSON.stringify(result.problems));
+  // Still four parsed boards with four names — the failure is precisely the missing
+  // field, not a collapse of the whole page, which is what makes the message actionable.
+  assert.equal(result.signals.boards, 4);
+  assert.equal(result.signals.named, 4);
+  assert.equal(result.signals.addressable, 0);
+});
+
+test("checkBoards flags boards that lost their name (nothing could label them)", () => {
+  const drifted = clone(boardsListPage);
+  for (const board of drifted.resource_response.data) delete board.name;
+  const result = checkBoards(drifted);
+  assert.equal(result.ok, false);
+  assert.ok(result.problems.some((p) => /4 of 4 boards have no name/.test(p)),
+    JSON.stringify(result.problems));
+  assert.equal(result.signals.named, 0);
+  assert.equal(result.signals.addressable, 4);
+});
+
+test("checkBoards flags ONE board of four losing its url (partial degradation)", () => {
+  // The rule is "every board", not "some board", and this is what makes that
+  // load-bearing: with a `some` rule, three good rows would cover for the fourth and a
+  // list that is 75% sweepable would print ✔. That is the same silent-degradation shape
+  // `checkBoardFeed`'s denominator exists for — "24 of 25 mapped" must not read as ✔.
+  const drifted = clone(boardsListPage);
+  delete drifted.resource_response.data[2].url;
+  const result = checkBoards(drifted);
+  assert.equal(result.ok, false);
+  assert.ok(result.problems.some((p) => /1 of 4 boards have no url/.test(p)),
+    JSON.stringify(result.problems));
+  assert.equal(result.signals.addressable, 3);
+});
+
+test("checkBoards flags ONE board of four losing its name (partial degradation)", () => {
+  const drifted = clone(boardsListPage);
+  delete drifted.resource_response.data[2].name;
+  const result = checkBoards(drifted);
+  assert.equal(result.ok, false);
+  assert.ok(result.problems.some((p) => /1 of 4 boards have no name/.test(p)),
+    JSON.stringify(result.problems));
+  assert.equal(result.signals.named, 3);
+});
+
+test("checkBoards flags a partial parse rather than reporting a smaller account", () => {
+  // One of four rows still declares `type: "board"` but has lost its id, so the parser
+  // drops it. `boards=3` on its own reads as an account with three boards; the
+  // denominator is what turns it into drift.
+  const drifted = clone(boardsListPage);
+  delete drifted.resource_response.data[1].id;
+  const result = checkBoards(drifted);
+  assert.equal(result.ok, false);
+  assert.ok(result.problems.some((p) => /1 of 4 board entries failed to parse/.test(p)),
+    JSON.stringify(result.problems));
+  assert.equal(result.signals.boards, 3);
+});
+
+test("checkBoards tolerates a boards list Pinterest sent without a `type` on its rows", () => {
+  // The fallback direction, pinned: an untyped entry counts as a board, so a rename of
+  // `type` surfaces through the name/url rules instead of silently emptying the list.
+  const untyped = clone(boardsListPage);
+  for (const board of untyped.resource_response.data) delete board.type;
+  const result = checkBoards(untyped);
+  assert.equal(result.ok, true, JSON.stringify(result.problems));
+  assert.equal(result.signals.boards, 4);
+  assert.equal(result.signals.modules, 0);
+});
+
+test("checkBoards flags a boards list that is entirely non-board modules", () => {
+  // The placeholder generalised: whatever the module is called, a page of nothing but
+  // modules is not a boards list.
+  const allModules = clone(boardsListPage);
+  for (const board of allModules.resource_response.data) board.type = "story";
+  const result = checkBoards(allModules);
+  assert.equal(result.ok, false);
+  assert.ok(result.problems.some((p) => /no boards among 4 entries/.test(p)),
+    JSON.stringify(result.problems));
+  assert.equal(result.signals.modules, 4);
+});
+
 // MARK: - checkRednoteBoard (098 T3)
 //
 // These tests prove the INVARIANTS are right against synthetic pages shaped like the real

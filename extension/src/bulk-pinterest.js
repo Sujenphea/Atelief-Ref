@@ -175,12 +175,39 @@ export function parseBoardFeedPage(json) {
   return { pins: items, bookmark };
 }
 
+/** A `data[]` entry on a Pinterest board resource is a board unless it DECLARES that it
+ * is something else. Pinterest interleaves non-board MODULES into `data[]`: the live
+ * board-feed capture carries a `type: "story"` / `related_interests_module` row beside
+ * its 24 pins, and a board page opens on a `board_ideas_preview_detailed` placeholder
+ * whose whole `data[]` is one `type: "story"` container.
+ *
+ * An entry with NO `type` counts as a board — the same direction `checkBoardFeed` chose
+ * for pins. If we cannot tell what an entry is, it has to parse or the canary hears about
+ * it; a Pinterest rename of `type` must not silently empty every boards list instead.
+ *
+ * Exported so `checkBoards` counts its denominator with the SAME predicate this filters
+ * on, rather than keeping a second copy that goes on agreeing after this one moves — the
+ * rule 496 set when it exported `hasTransform` for exactly that reason. */
+export function isBoardEntry(entry) {
+  return !!entry && (entry.type == null || entry.type === "board");
+}
+
 /** Parse a `BoardsResource` page → `{ boards: [{ id, name, url }], bookmark }`. For
- * a whole-account scope / a board-picker UI; a single-board sweep skips it. */
+ * a whole-account scope / a board-picker UI; a single-board sweep skips it.
+ *
+ * A story container has an `id`, so before 499 it parsed as a board — `{ id, name: null,
+ * url: null }` — and a board with no `url` is not a board any caller can use: the url is
+ * the only field that makes one sweepable, and `buildBoardFeedURL` puts it in BOTH
+ * `source_url` and `board_url`, where a `null` stringifies to the literal "null" and
+ * Pinterest answers a malformed request rather than erroring anywhere visible.
+ *
+ * A url-less entry that still CLAIMS to be a board is kept, not dropped: that is drift
+ * `checkBoards` must be able to name (`board.url` renamed), and dropping it here would
+ * disguise it as "the account has fewer boards". Only the declared non-boards go. */
 export function parseBoardsPage(json) {
   const { items, bookmark } = unwrapResource(json);
   const boards = items
-    .filter((board) => board && board.id)
+    .filter((board) => board && board.id && isBoardEntry(board))
     .map((board) => ({ id: String(board.id), name: board.name || null, url: board.url || null }));
   return { boards, bookmark };
 }

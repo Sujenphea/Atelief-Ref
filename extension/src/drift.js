@@ -11,7 +11,12 @@
 
 import { parseTimelinePage } from "./bulk-twitter.js";
 import { collectConversationTweets, selfThreadChain, mapThread } from "./twitter-thread.js";
-import { parseBoardFeedPage, parseBoardsPage, mapPinterestPin } from "./bulk-pinterest.js";
+// `isBoardEntry` is IMPORTED, never re-typed, for the reason `ORIGIN_HOST` is below: the
+// check counts its board denominator with the same predicate `parseBoardsPage` filters
+// on, and a second copy here would keep passing after that one moved.
+import {
+  parseBoardFeedPage, parseBoardsPage, mapPinterestPin, isBoardEntry,
+} from "./bulk-pinterest.js";
 import {
   parseBoardFeedPage as parseRednoteBoardPage, parseNoteDetail as parseRednoteNoteDetail,
   detectRednoteChallenge, detectRednoteDetailChallenge, isBoardFeedRequest,
@@ -232,7 +237,39 @@ export function checkBoardFeed(json, { host = "www.pinterest.com" } = {}) {
   });
 }
 
-/** Pinterest `BoardsResource`: boards must still parse to `{ id, name, url }`. */
+/**
+ * Pinterest `BoardsResource`: the response must still BE a boards list — entries that
+ * parse to `{ id, name, url }` with all three present, not merely with an id.
+ *
+ * The weak version asserted only "at least one board, each with an id" and could not tell
+ * a boards list from a response that is not one. A user supplied the wrong Pinterest file
+ * by accident — the `board_ideas_preview_detailed` placeholder a board page opens with
+ * (`endpoint_name: v3_board_pins`, one `type: "story"` container in `data[]`, zero
+ * boards) — and got `✔ Pinterest boards list — boards=1`, because the story's id
+ * satisfied the only per-entry rule there was. Same verdict as the real list, opposite
+ * truth. The story is now dropped by `parseBoardsPage` (it declares a non-board `type`);
+ * the rules below are what makes the REMAINING entries answerable for, and they hold
+ * independently of that filter — a Pinterest rename of `url` produces url-less entries
+ * that still declare `type: "board"`.
+ *
+ * `url` is the load-bearing field, not a nicety: it is the only thing that makes a board
+ * sweepable. `buildBoardFeedURL` puts it in both `source_url` and `board_url`, and a null
+ * stringifies to the literal "null" — a malformed request, no throw, nothing to see.
+ * `name` is the other half of the parser's stated contract and the only human label the
+ * response carries; a picker cannot show a board it cannot name, and the popup has no
+ * fallback to invent one (`popup-view.js` labels rednote off the id precisely because
+ * that platform sends no name — "an id is honest; an invented name is not").
+ *
+ * Both are required of EVERY board rather than "some" — unlike `checkTimeline`'s media
+ * rule, where a text-only tweet legitimately lands media-less. Every board in the live
+ * capture carries both, and a Pinterest board cannot exist without a name and the slug
+ * url derived from it.
+ *
+ * The denominator is computed from the RAW `data[]`, the way `checkInstagramSaved`
+ * computes its fan-out from Instagram's own declared count — through `isBoardEntry`,
+ * IMPORTED from the parser so the two cannot disagree about what a board entry is. That
+ * is what keeps "the parser dropped 3 of 4 boards" from reading as "a 1-board account".
+ */
 export function checkBoards(json) {
   let page;
   try {
@@ -240,10 +277,43 @@ export function checkBoards(json) {
   } catch (error) {
     return verdict([`parseBoardsPage threw: ${String(error)}`], {});
   }
+  const raw = json && json.resource_response ? json.resource_response.data : null;
+  const entries = Array.isArray(raw) ? raw : [];
+  const boardEntries = entries.filter(isBoardEntry);
+  const modules = entries.length - boardEntries.length;
+
   const problems = [];
-  if (page.boards.length < 1) problems.push("no boards found");
+  if (page.boards.length < 1) {
+    problems.push(entries.length > 0
+      ? `no boards among ${entries.length} entries — every one is a non-board module`
+        + ` (is this a boards list at all?)`
+      : "no boards found");
+  }
+  if (page.boards.length < boardEntries.length) {
+    problems.push(`${boardEntries.length - page.boards.length} of ${boardEntries.length}`
+      + ` board entries failed to parse (the id shape moved?)`);
+  }
   if (page.boards.some((board) => !board.id)) problems.push("a board is missing its id");
-  return verdict(problems, { boards: page.boards.length });
+  const named = page.boards.filter((board) => board.name).length;
+  const addressable = page.boards.filter((board) => board.url).length;
+  if (named < page.boards.length) {
+    problems.push(`${page.boards.length - named} of ${page.boards.length} boards have no name`
+      + ` (nothing could label them — board.name renamed?)`);
+  }
+  if (addressable < page.boards.length) {
+    problems.push(`${page.boards.length - addressable} of ${page.boards.length} boards have no url`
+      + ` (unsweepable — buildBoardFeedURL needs it for source_url AND board_url)`);
+  }
+  // `bookmark` is reported but NOT required: unlike the board feed, a boards list
+  // legitimately fits on one page, and `enumerateBoards` reads its absence as end-of-feed.
+  return verdict(problems, {
+    entries: entries.length,
+    modules,
+    boards: page.boards.length,
+    named,
+    addressable,
+    hasBookmark: !!page.bookmark,
+  });
 }
 
 /** Instagram saved feed: posts must still fan out per media to `pk`-keyed items with a
