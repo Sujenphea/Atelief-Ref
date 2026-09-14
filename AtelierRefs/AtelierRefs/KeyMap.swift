@@ -490,6 +490,10 @@ nonisolated enum KeyMap {
 
     /// `V` / `F` / `T` are the canvas's bare-letter tools, and `toolShortcut` returns
     /// `nil` for every other letter — so the board's remaining bare letters are free.
+    /// Free of the TOOL decoder, to be exact: `A` is bound below and rides
+    /// `boardShortcut`, a second guard spending from the same bare-letter budget ([024]
+    /// K3). ⌘G (100 · P2) spends none of it — both decoders reject ⌘, so the chord and
+    /// the bare letter are different keys and bare `G` is still there for the taking.
     private static let spaceShortcuts: [Shortcut] = [
         Shortcut([.character("v")], [], "Select tool",
                  scope: .space, decoder: .canvasTool,
@@ -518,6 +522,14 @@ nonisolated enum KeyMap {
                  scope: .space, source: "CanvasHostView.swift:1376"),
         Shortcut([.character("d")], [.command], "Duplicate the selection",
                  scope: .space, source: "SpaceView.swift:816"),
+        // 100 · P2. The frame the user would otherwise have drawn by hand around a
+        // cluster they had already selected. A chord rather than a bare letter, so it
+        // costs the canvas nothing, and it is the only board row with NO control of its
+        // own: a glyph for it could only live in `.multi`, which is the bar-grows-on-
+        // second-select defect 069 removed, so the carrier is zero-size and this row is
+        // the whole of how a user finds it (see `SpaceView.groupInFrameShortcut`).
+        Shortcut([.character("g")], [.command], "Wrap the selection in a frame",
+                 scope: .space, source: "SpaceView.swift:1003"),
         Shortcut([.character("]")], [.command, .shift], "Bring to front",
                  scope: .space, source: "SpaceView.swift:840"),
         Shortcut([.character("[")], [.command, .shift], "Send to back",

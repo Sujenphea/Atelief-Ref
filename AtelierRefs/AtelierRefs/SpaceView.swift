@@ -759,6 +759,7 @@ struct SpaceView: View {
         HStack(spacing: 2) {
             undoRedoBar // mode-invariant (051 · E-2)
             zOrderShortcuts // mode-invariant, zero-size (069)
+            groupInFrameShortcut // mode-invariant, zero-size (100 · P2)
             switch barMode {
             case .idle: toolPicker
             case .single: singleBar
@@ -967,6 +968,42 @@ struct SpaceView: View {
         .frame(width: 0, height: 0)
         .opacity(0)
         .accessibilityHidden(true)
+    }
+
+    /// ⌘G wraps the selection in a frame (100 · P2), carried by a zero-size button
+    /// rather than by a glyph in `multiBar`.
+    ///
+    /// **Why no visible button.** 069 collapsed nine ops behind three glyphs for one
+    /// stated reason: the row is the same width in every mode, so it no longer grows
+    /// under the cursor the moment a second tile is selected. ⌘G is live at exactly two
+    /// tiles and up, so a button for it could only live in `.multi` — which is the
+    /// defect 069 fixed, re-introduced by the one control whose whole subject is
+    /// multi-selection. Nor could it be hoisted mode-invariantly like undo/redo: a
+    /// "group" glyph offered with nothing selected is an affordance for a verb that
+    /// cannot run. Discovery is the shortcuts sheet, which renders from the `KeyMap`
+    /// row this phase adds (024 · K1) — the same route ⌘⇧] and ⌘⇧[ rely on.
+    ///
+    /// MODE-INVARIANT for the reason ``zOrderShortcuts`` documents: a `keyboardShortcut`
+    /// on a view that isn't rendered never fires, so a binding mounted inside `multiBar`
+    /// would be dead in `.idle` and `.single` — and `.multi` is derived from the
+    /// selection count, so the chord would race the very state that gates it. Mounting
+    /// it everywhere is safe because the MODEL is the gate: `groupSelectionInFrame()`
+    /// no-ops below two drawn tiles (100 §4), so ⌘G on an empty or single selection
+    /// does nothing rather than something wrong.
+    ///
+    /// The shortcut, but not the view, drops out while a text box is being edited — the
+    /// same bargain `undoRedoBar` and `duplicateButton` strike. A key equivalent is
+    /// dispatched before `keyDown` reaches the first responder, so a live ⌘G would
+    /// frame the board mid-sentence; and ⌘G means nothing to an `NSTextView`, so the
+    /// keystroke would simply vanish into a new frame. Withdrawing the binding rather
+    /// than unmounting the carrier keeps the bar from reflowing mid-edit.
+    @ViewBuilder private var groupInFrameShortcut: some View {
+        Button("Group in Frame") { space.groupSelectionInFrame() }
+            .keyboardShortcut(
+                editingTileID != nil ? nil : KeyboardShortcut("g", modifiers: .command))
+            .frame(width: 0, height: 0)
+            .opacity(0)
+            .accessibilityHidden(true)
     }
 
     // MARK: - External import (drop + paste)
